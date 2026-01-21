@@ -9,8 +9,44 @@
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
 
-    <!-- Local Storage Based State Management (No Firebase Required) -->
+    <!-- Firebase SDK -->
+    <script src="https://www.gstatic.com/firebasejs/10.7.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.7.0/firebase-auth-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.7.0/firebase-firestore-compat.js"></script>
+
     <script>
+        // ============================================
+        // FIREBASE CONFIGURATION - UPDATE THIS
+        // ============================================
+        const firebaseConfig = {
+            apiKey: "YOUR_API_KEY",
+            authDomain: "YOUR_PROJECT.firebaseapp.com",
+            projectId: "YOUR_PROJECT_ID",
+            storageBucket: "YOUR_PROJECT.appspot.com",
+            messagingSenderId: "YOUR_SENDER_ID",
+            appId: "YOUR_APP_ID"
+        };
+
+        // Initialize Firebase
+        firebase.initializeApp(firebaseConfig);
+        const auth = firebase.auth();
+        const db = firebase.firestore();
+
+        // ============================================
+        // ROLE-BASED ACCESS CONTROL (RBAC)
+        // ============================================
+        const INITIAL_ADMIN = "adithyar@ninjacart.com";
+
+        window.currentUser = null;
+        window.currentUserRole = null;
+
+        // Role hierarchy: admin > central > viewer
+        const ROLES = {
+            admin: { level: 3, label: "Admin", canEditCSV: true, canManageAllUsers: true },
+            central: { level: 2, label: "Central Team", canEditCSV: false, canManageAllUsers: false },
+            viewer: { level: 1, label: "Viewer", canEditCSV: false, canManageAllUsers: false }
+        };
+
         // Default state
         const defaultState = {
             csvUrl: "https://docs.google.com/spreadsheets/d/e/2PACX-1vS6zQmj2xCO5cOrEowyMgU48OGVl2hakWGmzGwDCBltMGJP9GgRQTiFAmvbkEebpdUg8zFNOMR38dVB/pub?output=csv",
@@ -26,33 +62,319 @@
             lastUpdated: 0
         };
 
-        // Load saved state from localStorage or use defaults
-        const savedState = localStorage.getItem('fruitsDashboardState');
-        window.dbState = savedState ? { ...defaultState, ...JSON.parse(savedState) } : defaultState;
-
+        window.dbState = { ...defaultState };
         window.rawData = [];
         window.monthFilterInitialized = false;
+        window.allUsers = {};
 
-        // Save to localStorage instead of Firebase
-        window.saveToCloud = (newUrl, newTargets, newEstPrice) => {
+        // ============================================
+        // AUTHENTICATION FUNCTIONS
+        // ============================================
+        async function signInWithGoogle() {
+            const provider = new firebase.auth.GoogleAuthProvider();
+            provider.setCustomParameters({ prompt: 'select_account' });
             try {
-                window.dbState.csvUrl = newUrl;
-                window.dbState.targets = newTargets;
-                if (newEstPrice !== undefined) window.dbState.estPricePerBox = newEstPrice;
-                window.dbState.lastUpdated = new Date().toISOString();
-                localStorage.setItem('fruitsDashboardState', JSON.stringify(window.dbState));
-                window.showToast("Settings Saved!");
+                await auth.signInWithPopup(provider);
+            } catch (error) {
+                console.error("Sign-in error:", error);
+                showLoginError(error.message);
+            }
+        }
+
+        async function signOut() {
+            await auth.signOut();
+            window.location.reload();
+        }
+
+        function showLoginError(message) {
+            const errorEl = document.getElementById('login-error');
+            if (errorEl) {
+                errorEl.textContent = message;
+                errorEl.classList.remove('hidden');
+            }
+        }
+
+        // ============================================
+        // USER & ROLE MANAGEMENT
+        // ============================================
+        async function loadUsers() {
+            try {
+                const doc = await db.collection('config').doc('users').get();
+                if (doc.exists) {
+                    window.allUsers = doc.data().users || {};
+                } else {
+                    // Initialize with default admin
+                    window.allUsers = { [INITIAL_ADMIN]: "admin" };
+                    await saveUsers();
+                }
             } catch (e) {
-                window.showToast("Error saving: " + e.message);
+                console.error("Error loading users:", e);
+                window.allUsers = { [INITIAL_ADMIN]: "admin" };
+            }
+        }
+
+        async function saveUsers() {
+            try {
+                await db.collection('config').doc('users').set({ users: window.allUsers });
+            } catch (e) {
+                console.error("Error saving users:", e);
+                window.showToast?.("Error saving users");
+            }
+        }
+
+        async function addUser(email, role) {
+            email = email.toLowerCase().trim();
+            if (!email || !role) return false;
+
+            // Central can't add admins
+            if (window.currentUserRole === 'central' && role === 'admin') {
+                window.showToast?.("Central Team cannot assign Admin role");
+                return false;
+            }
+
+            window.allUsers[email] = role;
+            await saveUsers();
+            renderUserManagement();
+            window.showToast?.(`User ${email} added as ${role}`);
+            return true;
+        }
+
+        async function removeUser(email) {
+            email = email.toLowerCase().trim();
+
+            // Can't remove yourself
+            if (email === window.currentUser?.email?.toLowerCase()) {
+                window.showToast?.("Cannot remove yourself");
+                return false;
+            }
+
+            // Central can't remove admins
+            if (window.currentUserRole === 'central' && window.allUsers[email] === 'admin') {
+                window.showToast?.("Central Team cannot remove Admins");
+                return false;
+            }
+
+            delete window.allUsers[email];
+            await saveUsers();
+            renderUserManagement();
+            window.showToast?.(`User ${email} removed`);
+            return true;
+        }
+
+        async function updateUserRole(email, newRole) {
+            email = email.toLowerCase().trim();
+
+            // Central can't promote to admin
+            if (window.currentUserRole === 'central' && newRole === 'admin') {
+                window.showToast?.("Central Team cannot assign Admin role");
+                return false;
+            }
+
+            // Can't demote yourself
+            if (email === window.currentUser?.email?.toLowerCase()) {
+                window.showToast?.("Cannot change your own role");
+                return false;
+            }
+
+            window.allUsers[email] = newRole;
+            await saveUsers();
+            renderUserManagement();
+            window.showToast?.(`${email} is now ${newRole}`);
+            return true;
+        }
+
+        function getUserRole(email) {
+            if (!email) return null;
+            email = email.toLowerCase().trim();
+            return window.allUsers[email] || null;
+        }
+
+        // ============================================
+        // FIRESTORE DATA SYNC
+        // ============================================
+        function setupDataListener() {
+            db.collection('config').doc('dashboard').onSnapshot((doc) => {
+                if (doc.exists) {
+                    const data = doc.data();
+                    if (data.csvUrl) window.dbState.csvUrl = data.csvUrl;
+                    if (data.targets) window.dbState.targets = data.targets;
+                    if (data.estPricePerBox !== undefined) window.dbState.estPricePerBox = data.estPricePerBox;
+
+                    const urlInput = document.getElementById('csv-url');
+                    if (urlInput && document.activeElement !== urlInput) {
+                        urlInput.value = window.dbState.csvUrl;
+                    }
+
+                    window.dispatchEvent(new CustomEvent('db-updated'));
+                }
+            });
+        }
+
+        window.saveToCloud = async (newUrl, newTargets, newEstPrice) => {
+            try {
+                // Check CSV edit permission
+                if (newUrl !== window.dbState.csvUrl && !ROLES[window.currentUserRole]?.canEditCSV) {
+                    window.showToast?.("You don't have permission to change the data source");
+                    return;
+                }
+
+                const updateData = {
+                    targets: newTargets,
+                    estPricePerBox: newEstPrice !== undefined ? newEstPrice : window.dbState.estPricePerBox,
+                    lastUpdated: new Date().toISOString(),
+                    updatedBy: window.currentUser?.email || 'unknown'
+                };
+
+                // Only admin can change CSV URL
+                if (ROLES[window.currentUserRole]?.canEditCSV) {
+                    updateData.csvUrl = newUrl;
+                }
+
+                await db.collection('config').doc('dashboard').set(updateData, { merge: true });
+                window.showToast?.("Settings Saved & Synced!");
+            } catch (e) {
+                console.error("Save error:", e);
+                window.showToast?.("Error saving: " + e.message);
             }
         };
 
-        // Update status to show ready
-        setTimeout(() => {
-            const urlInput = document.getElementById('csv-url');
-            if (urlInput) urlInput.value = window.dbState.csvUrl;
-            window.dispatchEvent(new CustomEvent('db-updated'));
-        }, 100);
+        // ============================================
+        // UI VISIBILITY BASED ON ROLE
+        // ============================================
+        function applyRoleBasedUI(role) {
+            const settingsBtn = document.getElementById('settings-btn');
+            const csvSection = document.getElementById('csv-section');
+            const targetsSection = document.getElementById('targets-section');
+            const userMgmtSection = document.getElementById('user-management-section');
+            const csvUrlInput = document.getElementById('csv-url');
+
+            // Hide all first
+            if (settingsBtn) settingsBtn.classList.add('hidden');
+            if (csvSection) csvSection.classList.add('hidden');
+            if (userMgmtSection) userMgmtSection.classList.add('hidden');
+
+            if (role === 'viewer') {
+                // Viewer: No settings access
+                return;
+            }
+
+            if (role === 'central' || role === 'admin') {
+                // Central & Admin: Show settings button
+                if (settingsBtn) settingsBtn.classList.remove('hidden');
+                if (userMgmtSection) userMgmtSection.classList.remove('hidden');
+
+                // Central: Hide CSV section OR disable input
+                if (role === 'central') {
+                    if (csvSection) csvSection.classList.add('hidden');
+                }
+
+                // Admin: Full access
+                if (role === 'admin') {
+                    if (csvSection) csvSection.classList.remove('hidden');
+                }
+            }
+
+            renderUserManagement();
+        }
+
+        function renderUserManagement() {
+            const container = document.getElementById('users-list');
+            if (!container) return;
+
+            const isAdmin = window.currentUserRole === 'admin';
+            const roleOptions = isAdmin
+                ? ['viewer', 'central', 'admin']
+                : ['viewer', 'central'];
+
+            let html = '';
+            Object.entries(window.allUsers).forEach(([email, role]) => {
+                const isCurrentUser = email === window.currentUser?.email?.toLowerCase();
+                const canModify = isAdmin || (window.currentUserRole === 'central' && role !== 'admin');
+
+                html += `
+                    <div class="flex items-center justify-between p-3 bg-slate-50 rounded-xl border border-slate-100 gap-2">
+                        <div class="flex-1 min-w-0">
+                            <div class="text-xs font-bold text-slate-700 truncate">${email}</div>
+                            ${isCurrentUser ? '<span class="text-[9px] text-blue-500 font-bold">(You)</span>' : ''}
+                        </div>
+                        <select 
+                            class="text-[10px] font-bold px-2 py-1 rounded-lg border border-slate-200 bg-white ${!canModify || isCurrentUser ? 'opacity-50' : ''}"
+                            ${!canModify || isCurrentUser ? 'disabled' : ''}
+                            onchange="updateUserRole('${email}', this.value)"
+                        >
+                            ${roleOptions.map(r => `<option value="${r}" ${r === role ? 'selected' : ''}>${ROLES[r].label}</option>`).join('')}
+                        </select>
+                        ${canModify && !isCurrentUser ? `
+                            <button onclick="removeUser('${email}')" class="w-7 h-7 rounded-lg bg-red-50 text-red-500 hover:bg-red-100 flex items-center justify-center">
+                                <i class="fas fa-trash text-[10px]"></i>
+                            </button>
+                        ` : ''}
+                    </div>
+                `;
+            });
+
+            container.innerHTML = html || '<p class="text-xs text-slate-400 text-center py-4">No users configured</p>';
+
+            // Update add user role options
+            const addRoleSelect = document.getElementById('add-user-role');
+            if (addRoleSelect) {
+                addRoleSelect.innerHTML = roleOptions.map(r =>
+                    `<option value="${r}">${ROLES[r].label}</option>`
+                ).join('');
+            }
+        }
+
+        // ============================================
+        // AUTH STATE LISTENER
+        // ============================================
+        auth.onAuthStateChanged(async (user) => {
+            const loginOverlay = document.getElementById('login-overlay');
+            const dashboard = document.getElementById('dashboard-container');
+            const userEmailDisplay = document.getElementById('user-email-display');
+
+            if (user) {
+                window.currentUser = user;
+                await loadUsers();
+
+                const role = getUserRole(user.email);
+
+                if (!role) {
+                    // User not in whitelist
+                    showLoginError(`Access denied. ${user.email} is not authorized. Contact admin.`);
+                    await auth.signOut();
+                    return;
+                }
+
+                window.currentUserRole = role;
+
+                // Hide login, show dashboard
+                if (loginOverlay) loginOverlay.classList.add('hidden');
+                if (dashboard) dashboard.classList.remove('hidden');
+                if (userEmailDisplay) {
+                    userEmailDisplay.innerHTML = `
+                        <span class="text-xs font-bold text-slate-600">${user.email}</span>
+                        <span class="text-[9px] px-2 py-0.5 rounded-full ${role === 'admin' ? 'bg-purple-100 text-purple-700' :
+                            role === 'central' ? 'bg-blue-100 text-blue-700' :
+                                'bg-slate-100 text-slate-600'
+                        } font-bold uppercase">${role}</span>
+                        <button onclick="signOut()" class="text-[10px] text-red-500 hover:text-red-700 font-bold ml-2">Sign Out</button>
+                    `;
+                }
+
+                // Apply role-based UI
+                applyRoleBasedUI(role);
+
+                // Setup data listener
+                setupDataListener();
+
+            } else {
+                // Show login overlay
+                window.currentUser = null;
+                window.currentUserRole = null;
+                if (loginOverlay) loginOverlay.classList.remove('hidden');
+                if (dashboard) dashboard.classList.add('hidden');
+            }
+        });
     </script>
 
     <style>
@@ -163,343 +485,424 @@
 
 <body class="min-h-screen pb-20 relative">
 
-    <div id="toast" class="toast">Action completed!</div>
+    <!-- LOGIN OVERLAY -->
+    <div id="login-overlay"
+        class="fixed inset-0 z-[200] bg-gradient-to-br from-slate-900 via-slate-800 to-blue-900 flex items-center justify-center">
+        <div class="bg-white rounded-3xl shadow-2xl p-8 max-w-md w-full mx-4 text-center">
+            <div class="w-16 h-16 bg-blue-600 rounded-2xl flex items-center justify-center mx-auto mb-6">
+                <i class="fas fa-chart-pie text-white text-2xl"></i>
+            </div>
+            <h1 class="text-2xl font-extrabold text-slate-900 mb-2">Domestic Fruits</h1>
+            <p class="text-blue-600 font-bold text-lg mb-6">15 Crore Dashboard</p>
 
-    <!-- Drill Down Modal -->
-    <div id="drilldown-modal" class="fixed inset-0 z-[60] bg-slate-900/40 hidden flex items-center justify-center p-4">
-        <div
-            class="bg-white rounded-2xl shadow-2xl w-full max-w-4xl max-h-[80vh] flex flex-col overflow-hidden animate-in fade-in zoom-in duration-200">
-            <div class="p-6 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
-                <div>
-                    <h3 class="text-lg font-extrabold text-slate-800" id="modal-title">Trade Details</h3>
-                    <p class="text-xs text-slate-500" id="modal-subtitle">Full transaction list</p>
-                </div>
-                <button onclick="closeModal()"
-                    class="w-8 h-8 rounded-full bg-slate-100 hover:bg-slate-200 flex items-center justify-center text-slate-500 transition-colors">
-                    <i class="fas fa-times"></i>
-                </button>
+            <button onclick="signInWithGoogle()"
+                class="w-full flex items-center justify-center gap-3 bg-white border-2 border-slate-200 hover:border-blue-500 hover:bg-blue-50 rounded-xl px-6 py-4 font-bold text-slate-700 transition-all shadow-sm hover:shadow-md">
+                <svg class="w-5 h-5" viewBox="0 0 24 24">
+                    <path fill="#4285F4"
+                        d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" />
+                    <path fill="#34A853"
+                        d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" />
+                    <path fill="#FBBC05"
+                        d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" />
+                    <path fill="#EA4335"
+                        d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" />
+                </svg>
+                Sign in with Google
+            </button>
+
+            <div id="login-error"
+                class="hidden mt-4 p-3 bg-red-50 border border-red-200 rounded-xl text-red-600 text-sm font-medium">
             </div>
-            <div class="flex-1 overflow-auto custom-scroll p-6">
-                <table class="w-full text-left border-collapse text-xs">
-                    <thead>
-                        <tr class="bg-slate-50 text-slate-400 uppercase tracking-widest font-bold border-b">
-                            <th class="p-3">Closure Date</th>
-                            <th class="p-3">Dispatch Date</th>
-                            <th class="p-3">Customer</th>
-                            <th class="p-3">Mark</th>
-                            <th class="p-3 text-right">Boxes</th>
-                            <th class="p-3 text-right">Sales</th>
-                            <th class="p-3 text-right">Margin</th>
-                        </tr>
-                    </thead>
-                    <tbody id="modal-body" class="divide-y divide-slate-100 text-slate-700 font-medium">
-                        <!-- Populated via JS -->
-                    </tbody>
-                </table>
-            </div>
-            <div class="p-4 bg-slate-50 border-t border-slate-100 text-right">
-                <button onclick="closeModal()"
-                    class="px-4 py-2 bg-slate-800 text-white rounded-lg text-xs font-bold hover:bg-slate-700">Close</button>
-            </div>
+
+            <p class="text-xs text-slate-400 mt-6">Secure access for authorized users only</p>
         </div>
     </div>
 
-    <!-- Sidebar -->
-    <div id="config-sidebar"
-        class="fixed right-0 top-0 h-full w-full sm:w-96 bg-white border-l z-[100] shadow-2xl transition-transform duration-300 translate-x-full flex flex-col">
-        <div class="p-6 border-b flex justify-between items-center bg-white sticky top-0">
-            <h2 class="text-xl font-extrabold text-slate-800">Settings</h2>
-            <button onclick="toggleConfig()"
-                class="w-10 h-10 flex items-center justify-center hover:bg-slate-100 rounded-full"><i
-                    class="fas fa-times"></i></button>
-        </div>
-        <div class="flex-1 overflow-y-auto p-6 space-y-8">
-            <section>
-                <label class="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-3 block">CSV Data
-                    Source</label>
-                <textarea id="csv-url" class="w-full p-4 bg-slate-50 border rounded-2xl text-xs h-24 resize-none"
-                    placeholder="Paste link..."></textarea>
-                <button onclick="copyShareLink()"
-                    class="w-full mt-3 py-3 bg-slate-900 text-white rounded-xl text-[10px] font-bold flex items-center justify-center gap-2"><i
-                        class="fas fa-share-alt"></i> Copy Shareable App Link</button>
-            </section>
-            <section>
-                <label class="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-3 block">Owner
-                    Targets</label>
-                <div id="targets-list" class="space-y-4 pb-4"></div>
-            </section>
-        </div>
-        <div class="p-6 bg-slate-50 border-t">
-            <button onclick="saveAndRefresh()"
-                class="w-full bg-blue-600 text-white py-4 rounded-2xl font-bold hover:bg-blue-700 shadow-lg flex items-center justify-center gap-3"><i
-                    class="fas fa-cloud-upload-alt"></i> Save All & Sync</button>
-        </div>
-    </div>
+    <!-- DASHBOARD CONTAINER (hidden until authenticated) -->
+    <div id="dashboard-container" class="hidden">
 
-    <!-- Header -->
-    <nav class="h-20 border-b bg-white/80 backdrop-blur-md sticky top-0 z-40 px-4 md:px-8">
-        <div class="max-w-7xl mx-auto h-full flex items-center justify-between">
-            <div class="flex items-center gap-3">
-                <div class="w-10 h-10 bg-blue-600 rounded-xl flex items-center justify-center text-white"><i
-                        class="fas fa-chart-pie"></i></div>
-                <div>
-                    <h1 class="text-lg font-extrabold text-slate-900 hidden sm:block">Domestic Fruits - <span
-                            class="text-blue-600">15 Crore</span></h1>
-                    <h1 class="text-lg font-extrabold text-slate-900 sm:hidden">Fruits <span
-                            class="text-blue-600">15Cr</span></h1>
-                    <div id="status-tag"
-                        class="text-[9px] font-bold text-slate-400 uppercase flex items-center gap-1.5 mt-0.5"><span
-                            class="w-1.5 h-1.5 rounded-full bg-slate-300"></span> Connecting...</div>
-                </div>
-            </div>
-            <div class="flex items-center gap-2 md:gap-3">
-                <!-- Month Filter -->
-                <div class="relative">
-                    <i
-                        class="fas fa-calendar-alt absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 text-xs"></i>
-                    <select id="month-filter" onchange="filterAndRender()"
-                        class="bg-slate-50 border border-slate-200 text-slate-700 text-xs font-bold pl-8 pr-3 py-2 rounded-xl outline-none focus:ring-2 focus:ring-blue-500 appearance-none cursor-pointer hover:bg-slate-100 transition-colors">
-                        <option value="All">All Months</option>
-                    </select>
-                </div>
+        <div id="toast" class="toast">Action completed!</div>
 
-                <!-- Data Month Indicator -->
-                <div
-                    class="hidden md:flex bg-blue-50 text-blue-700 text-xs font-bold px-3 py-1.5 rounded-lg border border-blue-100 items-center gap-2">
-                    <i class="fas fa-database"></i> Live
-                </div>
-
-                <div class="hidden md:flex items-center gap-3 pr-4 border-r">
-                    <span id="last-sync-time" class="text-[9px] font-bold text-slate-400 uppercase">Waiting</span>
-                    <button onclick="manualRefresh()"
-                        class="w-8 h-8 rounded-full bg-blue-50 text-blue-600 hover:bg-blue-100"><i id="nav-sync-icon"
-                            class="fas fa-sync-alt text-xs"></i></button>
-                </div>
-                <button id="settings-btn" onclick="toggleConfig()"
-                    class="hidden bg-slate-900 text-white px-4 py-2 rounded-xl text-xs font-bold flex items-center gap-2"><span
-                        class="hidden sm:inline">Settings</span> <i class="fas fa-sliders-h"></i></button>
-            </div>
-        </div>
-    </nav>
-
-    <main class="max-w-7xl mx-auto p-4 md:p-8 space-y-8">
-        <!-- Primary KPIs -->
-        <section class="kpi-grid">
-            <div class="kpi-card border-l-4 border-l-blue-500">
-                <span class="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Closed Sales</span>
-                <div id="mtd-sales" class="text-2xl font-extrabold text-slate-800 mt-1">₹0</div>
-            </div>
-            <div class="kpi-card border-l-4 border-l-emerald-500">
-                <span class="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Total Margin</span>
-                <div id="mtd-margin" class="text-2xl font-extrabold text-slate-800 mt-1">₹0</div>
-            </div>
-            <div class="kpi-card border-l-4 border-l-amber-500">
-                <span class="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Yield %</span>
-                <div id="margin-pct" class="text-2xl font-extrabold text-slate-800 mt-1">0.0%</div>
-            </div>
-        </section>
-
-        <!-- Open Inventory & Projection -->
-        <section class="bg-gradient-to-r from-slate-800 to-slate-900 rounded-2xl p-6 text-white shadow-lg">
-            <div class="flex flex-col md:flex-row md:items-center justify-between gap-6">
-                <div class="space-y-2">
-                    <div class="flex items-center gap-2 text-slate-300">
-                        <i class="fas fa-box-open"></i> <span class="text-xs font-bold uppercase tracking-widest">Open
-                            Inventory</span>
+        <!-- Drill Down Modal -->
+        <div id="drilldown-modal"
+            class="fixed inset-0 z-[60] bg-slate-900/40 hidden flex items-center justify-center p-4">
+            <div
+                class="bg-white rounded-2xl shadow-2xl w-full max-w-4xl max-h-[80vh] flex flex-col overflow-hidden animate-in fade-in zoom-in duration-200">
+                <div class="p-6 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
+                    <div>
+                        <h3 class="text-lg font-extrabold text-slate-800" id="modal-title">Trade Details</h3>
+                        <p class="text-xs text-slate-500" id="modal-subtitle">Full transaction list</p>
                     </div>
-                    <div class="flex items-end gap-4">
-                        <div>
-                            <div class="text-3xl font-black" id="total-open-boxes">0</div>
-                            <div class="text-[10px] text-slate-400 uppercase">Pending Boxes</div>
+                    <button onclick="closeModal()"
+                        class="w-8 h-8 rounded-full bg-slate-100 hover:bg-slate-200 flex items-center justify-center text-slate-500 transition-colors">
+                        <i class="fas fa-times"></i>
+                    </button>
+                </div>
+                <div class="flex-1 overflow-auto custom-scroll p-6">
+                    <table class="w-full text-left border-collapse text-xs">
+                        <thead>
+                            <tr class="bg-slate-50 text-slate-400 uppercase tracking-widest font-bold border-b">
+                                <th class="p-3">Closure Date</th>
+                                <th class="p-3">Dispatch Date</th>
+                                <th class="p-3">Customer</th>
+                                <th class="p-3">Mark</th>
+                                <th class="p-3 text-right">Boxes</th>
+                                <th class="p-3 text-right">Sales</th>
+                                <th class="p-3 text-right">Margin</th>
+                            </tr>
+                        </thead>
+                        <tbody id="modal-body" class="divide-y divide-slate-100 text-slate-700 font-medium">
+                            <!-- Populated via JS -->
+                        </tbody>
+                    </table>
+                </div>
+                <div class="p-4 bg-slate-50 border-t border-slate-100 text-right">
+                    <button onclick="closeModal()"
+                        class="px-4 py-2 bg-slate-800 text-white rounded-lg text-xs font-bold hover:bg-slate-700">Close</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Sidebar -->
+        <div id="config-sidebar"
+            class="fixed right-0 top-0 h-full w-full sm:w-96 bg-white border-l z-[100] shadow-2xl transition-transform duration-300 translate-x-full flex flex-col">
+            <div class="p-6 border-b flex justify-between items-center bg-white sticky top-0">
+                <h2 class="text-xl font-extrabold text-slate-800">Settings</h2>
+                <button onclick="toggleConfig()"
+                    class="w-10 h-10 flex items-center justify-center hover:bg-slate-100 rounded-full"><i
+                        class="fas fa-times"></i></button>
+            </div>
+            <div class="flex-1 overflow-y-auto p-6 space-y-8">
+                <!-- CSV Section (Admin only) -->
+                <section id="csv-section">
+                    <label class="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-3 block">CSV Data
+                        Source</label>
+                    <textarea id="csv-url" class="w-full p-4 bg-slate-50 border rounded-2xl text-xs h-24 resize-none"
+                        placeholder="Paste link..."></textarea>
+                    <button onclick="copyShareLink()"
+                        class="w-full mt-3 py-3 bg-slate-900 text-white rounded-xl text-[10px] font-bold flex items-center justify-center gap-2"><i
+                            class="fas fa-share-alt"></i> Copy Shareable App Link</button>
+                </section>
+
+                <!-- Targets Section (Central & Admin) -->
+                <section id="targets-section">
+                    <label class="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-3 block">Owner
+                        Targets</label>
+                    <div id="targets-list" class="space-y-4 pb-4"></div>
+                </section>
+
+                <!-- User Management Section (Central & Admin) -->
+                <section id="user-management-section" class="hidden">
+                    <label class="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-3 block">
+                        <i class="fas fa-users mr-1"></i> User Management
+                    </label>
+
+                    <!-- Add User Form -->
+                    <div class="bg-blue-50 border border-blue-100 rounded-xl p-4 mb-4">
+                        <div class="flex gap-2 mb-2">
+                            <input type="email" id="add-user-email"
+                                class="flex-1 px-3 py-2 text-xs border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-blue-500"
+                                placeholder="user@email.com">
+                            <select id="add-user-role"
+                                class="text-xs font-bold px-2 py-2 border border-slate-200 rounded-lg bg-white">
+                                <option value="viewer">Viewer</option>
+                                <option value="central">Central Team</option>
+                            </select>
                         </div>
-                        <div class="h-8 w-px bg-slate-700"></div>
-                        <div class="flex flex-col">
-                            <label class="text-[9px] text-slate-400 mb-1">Est. Price / Box (₹)</label>
-                            <input type="number" id="global-est-price"
-                                class="w-24 bg-slate-700 border border-slate-600 rounded text-white px-2 py-1 text-sm font-bold focus:ring-2 focus:ring-blue-500 outline-none"
-                                placeholder="1000" onchange="updateGlobalPrice(this.value)">
+                        <button onclick="addUserFromForm()"
+                            class="w-full py-2 bg-blue-600 text-white rounded-lg text-[10px] font-bold hover:bg-blue-700 flex items-center justify-center gap-2">
+                            <i class="fas fa-plus"></i> Add User
+                        </button>
+                    </div>
+
+                    <!-- Users List -->
+                    <div id="users-list" class="space-y-2 max-h-60 overflow-y-auto custom-scroll"></div>
+                </section>
+            </div>
+            <div class="p-6 bg-slate-50 border-t">
+                <button onclick="saveAndRefresh()"
+                    class="w-full bg-blue-600 text-white py-4 rounded-2xl font-bold hover:bg-blue-700 shadow-lg flex items-center justify-center gap-3"><i
+                        class="fas fa-cloud-upload-alt"></i> Save All & Sync</button>
+            </div>
+        </div>
+
+        <!-- Header -->
+        <nav class="h-20 border-b bg-white/80 backdrop-blur-md sticky top-0 z-40 px-4 md:px-8">
+            <div class="max-w-7xl mx-auto h-full flex items-center justify-between">
+                <div class="flex items-center gap-3">
+                    <div class="w-10 h-10 bg-blue-600 rounded-xl flex items-center justify-center text-white"><i
+                            class="fas fa-chart-pie"></i></div>
+                    <div>
+                        <h1 class="text-lg font-extrabold text-slate-900 hidden sm:block">Domestic Fruits - <span
+                                class="text-blue-600">15 Crore</span></h1>
+                        <h1 class="text-lg font-extrabold text-slate-900 sm:hidden">Fruits <span
+                                class="text-blue-600">15Cr</span></h1>
+                        <div id="status-tag"
+                            class="text-[9px] font-bold text-slate-400 uppercase flex items-center gap-1.5 mt-0.5"><span
+                                class="w-1.5 h-1.5 rounded-full bg-slate-300"></span> Connecting...</div>
+                    </div>
+                </div>
+                <div class="flex items-center gap-2 md:gap-3">
+                    <!-- Month Filter -->
+                    <div class="relative">
+                        <i
+                            class="fas fa-calendar-alt absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 text-xs"></i>
+                        <select id="month-filter" onchange="filterAndRender()"
+                            class="bg-slate-50 border border-slate-200 text-slate-700 text-xs font-bold pl-8 pr-3 py-2 rounded-xl outline-none focus:ring-2 focus:ring-blue-500 appearance-none cursor-pointer hover:bg-slate-100 transition-colors">
+                            <option value="All">All Months</option>
+                        </select>
+                    </div>
+
+                    <!-- Data Month Indicator -->
+                    <div
+                        class="hidden md:flex bg-blue-50 text-blue-700 text-xs font-bold px-3 py-1.5 rounded-lg border border-blue-100 items-center gap-2">
+                        <i class="fas fa-database"></i> Live
+                    </div>
+
+                    <div class="hidden md:flex items-center gap-3 pr-4 border-r">
+                        <span id="last-sync-time" class="text-[9px] font-bold text-slate-400 uppercase">Waiting</span>
+                        <button onclick="manualRefresh()"
+                            class="w-8 h-8 rounded-full bg-blue-50 text-blue-600 hover:bg-blue-100"><i
+                                id="nav-sync-icon" class="fas fa-sync-alt text-xs"></i></button>
+                    </div>
+
+                    <!-- User Display -->
+                    <div id="user-email-display"
+                        class="hidden md:flex items-center gap-2 px-3 py-1.5 bg-slate-50 rounded-xl border border-slate-200">
+                        <!-- Populated by JS -->
+                    </div>
+
+                    <button id="settings-btn" onclick="toggleConfig()"
+                        class="hidden bg-slate-900 text-white px-4 py-2 rounded-xl text-xs font-bold flex items-center gap-2"><span
+                            class="hidden sm:inline">Settings</span> <i class="fas fa-sliders-h"></i></button>
+                </div>
+            </div>
+        </nav>
+
+        <main class="max-w-7xl mx-auto p-4 md:p-8 space-y-8">
+            <!-- Primary KPIs -->
+            <section class="kpi-grid">
+                <div class="kpi-card border-l-4 border-l-blue-500">
+                    <span class="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Closed Sales</span>
+                    <div id="mtd-sales" class="text-2xl font-extrabold text-slate-800 mt-1">₹0</div>
+                </div>
+                <div class="kpi-card border-l-4 border-l-emerald-500">
+                    <span class="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Total Margin</span>
+                    <div id="mtd-margin" class="text-2xl font-extrabold text-slate-800 mt-1">₹0</div>
+                </div>
+                <div class="kpi-card border-l-4 border-l-amber-500">
+                    <span class="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Yield %</span>
+                    <div id="margin-pct" class="text-2xl font-extrabold text-slate-800 mt-1">0.0%</div>
+                </div>
+            </section>
+
+            <!-- Open Inventory & Projection -->
+            <section class="bg-gradient-to-r from-slate-800 to-slate-900 rounded-2xl p-6 text-white shadow-lg">
+                <div class="flex flex-col md:flex-row md:items-center justify-between gap-6">
+                    <div class="space-y-2">
+                        <div class="flex items-center gap-2 text-slate-300">
+                            <i class="fas fa-box-open"></i> <span
+                                class="text-xs font-bold uppercase tracking-widest">Open
+                                Inventory</span>
                         </div>
-                    </div>
-                </div>
-                <div class="bg-white/10 rounded-xl p-4 border border-white/5 flex-1 max-w-lg">
-                    <div class="flex justify-between items-end mb-2">
-                        <span class="text-[10px] font-bold text-blue-200 uppercase tracking-widest">Projected Revenue
-                            (Open)</span>
-                        <span id="projected-open-val" class="text-lg font-bold text-blue-300">₹0</span>
-                    </div>
-                    <div class="h-px bg-white/10 w-full my-2"></div>
-                    <div class="flex justify-between items-end">
-                        <span class="text-xs font-bold text-white uppercase tracking-widest">Total Potential
-                            Revenue</span>
-                        <span id="total-potential-rev" class="text-2xl font-black text-white">₹0</span>
-                    </div>
-                </div>
-            </div>
-        </section>
-
-        <!-- Secondary KPIs -->
-        <section class="secondary-grid">
-            <div class="kpi-card bg-slate-50 border-slate-200">
-                <span class="text-[9px] font-bold text-slate-400 uppercase">Avg. Realisation</span>
-                <div class="flex items-baseline gap-1"><span id="kpi-global-rate"
-                        class="text-lg font-bold text-slate-700">₹0</span><span class="text-[10px] text-slate-400">/
-                        Kg</span></div>
-            </div>
-            <div class="kpi-card bg-slate-50 border-slate-200">
-                <span class="text-[9px] font-bold text-slate-400 uppercase">Top Source Market</span>
-                <div class="flex items-baseline gap-1"><span id="kpi-top-market"
-                        class="text-sm font-bold text-slate-700 truncate block w-full">-</span></div>
-            </div>
-            <div class="kpi-card bg-slate-50 border-slate-200">
-                <span class="text-[9px] font-bold text-slate-400 uppercase">Total Volume</span>
-                <div class="flex items-baseline gap-1"><span id="kpi-volume"
-                        class="text-lg font-bold text-slate-700">0</span><span
-                        class="text-[10px] text-slate-400">Boxes</span></div>
-            </div>
-            <div class="kpi-card bg-slate-50 border-slate-200">
-                <span class="text-[9px] font-bold text-slate-400 uppercase">Active Customers</span>
-                <div class="flex items-baseline gap-1"><span id="kpi-customers"
-                        class="text-lg font-bold text-slate-700">0</span><span
-                        class="text-[10px] text-slate-400">Unique</span></div>
-            </div>
-        </section>
-
-        <!-- Main Content -->
-        <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
-            <div class="lg:col-span-2 space-y-6">
-                <div class="flex items-center justify-between">
-                    <h3 class="text-sm font-extrabold text-slate-800 uppercase tracking-widest">Ownership Matrix</h3>
-                    <span class="text-[9px] text-slate-400 font-medium bg-slate-100 px-2 py-1 rounded">Click row for
-                        details</span>
-                </div>
-                <div class="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden">
-                    <div class="overflow-x-auto custom-scroll">
-                        <table class="w-full text-left border-collapse min-w-[600px]">
-                            <thead>
-                                <tr
-                                    class="bg-slate-50/80 border-b border-slate-100 text-[10px] font-bold text-slate-400 uppercase tracking-widest">
-                                    <th class="px-6 py-4">Owner</th>
-                                    <th class="px-6 py-4">Volume (Boxes)</th>
-                                    <th class="px-6 py-4">Sales vs Goal</th>
-                                    <th class="px-6 py-4">Margin vs Goal</th>
-                                    <th class="px-6 py-4 text-right">Yield</th>
-                                </tr>
-                            </thead>
-                            <tbody id="mark-breakdown-body" class="divide-y divide-slate-50"></tbody>
-                        </table>
-                    </div>
-                </div>
-                <div class="bg-white border border-slate-200 rounded-2xl p-6 shadow-sm">
-                    <h3 class="text-xs font-extrabold text-slate-800 uppercase tracking-widest mb-4">Cumulative Sales
-                        Growth (Closed GMV)</h3>
-                    <div class="chart-container"><canvas id="trendChart"></canvas></div>
-                </div>
-
-                <!-- NEW SOURCE MARKET CHART -->
-                <div class="bg-white border border-slate-200 rounded-2xl p-6 shadow-sm mt-6">
-                    <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-4">
-                        <h3 class="text-xs font-extrabold text-slate-800 uppercase tracking-widest">Source Market Growth
-                        </h3>
-
-                        <!-- Checkbox Dropdown -->
-                        <div class="flex items-center gap-2 relative">
-                            <span class="text-[9px] text-slate-400 font-bold uppercase">Filter:</span>
-                            <div class="relative">
-                                <button onclick="toggleSourceDropdown(event)"
-                                    class="flex items-center justify-between w-48 text-xs border border-slate-300 rounded-lg px-3 py-2 bg-slate-50 hover:bg-slate-100 font-bold text-slate-700 transition-colors focus:outline-none focus:ring-2 focus:ring-blue-100">
-                                    <span id="source-filter-label" class="truncate">All Sources</span>
-                                    <i class="fas fa-chevron-down text-slate-400 text-[10px] ml-2"></i>
-                                </button>
-
-                                <div id="source-dropdown-menu"
-                                    class="hidden absolute top-full right-0 mt-2 w-56 bg-white border border-slate-200 rounded-xl shadow-xl z-20 p-2 max-h-60 overflow-y-auto custom-scroll animate-in fade-in zoom-in-95 duration-100 origin-top-right">
-                                    <!-- Checkboxes injected here -->
-                                </div>
+                        <div class="flex items-end gap-4">
+                            <div>
+                                <div class="text-3xl font-black" id="total-open-boxes">0</div>
+                                <div class="text-[10px] text-slate-400 uppercase">Pending Boxes</div>
+                            </div>
+                            <div class="h-8 w-px bg-slate-700"></div>
+                            <div class="flex flex-col">
+                                <label class="text-[9px] text-slate-400 mb-1">Est. Price / Box (₹)</label>
+                                <input type="number" id="global-est-price"
+                                    class="w-24 bg-slate-700 border border-slate-600 rounded text-white px-2 py-1 text-sm font-bold focus:ring-2 focus:ring-blue-500 outline-none"
+                                    placeholder="1000" onchange="updateGlobalPrice(this.value)">
                             </div>
                         </div>
                     </div>
-                    <div class="chart-container"><canvas id="sourceChart"></canvas></div>
+                    <div class="bg-white/10 rounded-xl p-4 border border-white/5 flex-1 max-w-lg">
+                        <div class="flex justify-between items-end mb-2">
+                            <span class="text-[10px] font-bold text-blue-200 uppercase tracking-widest">Projected
+                                Revenue
+                                (Open)</span>
+                            <span id="projected-open-val" class="text-lg font-bold text-blue-300">₹0</span>
+                        </div>
+                        <div class="h-px bg-white/10 w-full my-2"></div>
+                        <div class="flex justify-between items-end">
+                            <span class="text-xs font-bold text-white uppercase tracking-widest">Total Potential
+                                Revenue</span>
+                            <span id="total-potential-rev" class="text-2xl font-black text-white">₹0</span>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Secondary KPIs -->
+            <section class="secondary-grid">
+                <div class="kpi-card bg-slate-50 border-slate-200">
+                    <span class="text-[9px] font-bold text-slate-400 uppercase">Avg. Realisation</span>
+                    <div class="flex items-baseline gap-1"><span id="kpi-global-rate"
+                            class="text-lg font-bold text-slate-700">₹0</span><span class="text-[10px] text-slate-400">/
+                            Kg</span></div>
+                </div>
+                <div class="kpi-card bg-slate-50 border-slate-200">
+                    <span class="text-[9px] font-bold text-slate-400 uppercase">Top Source Market</span>
+                    <div class="flex items-baseline gap-1"><span id="kpi-top-market"
+                            class="text-sm font-bold text-slate-700 truncate block w-full">-</span></div>
+                </div>
+                <div class="kpi-card bg-slate-50 border-slate-200">
+                    <span class="text-[9px] font-bold text-slate-400 uppercase">Total Volume</span>
+                    <div class="flex items-baseline gap-1"><span id="kpi-volume"
+                            class="text-lg font-bold text-slate-700">0</span><span
+                            class="text-[10px] text-slate-400">Boxes</span></div>
+                </div>
+                <div class="kpi-card bg-slate-50 border-slate-200">
+                    <span class="text-[9px] font-bold text-slate-400 uppercase">Active Customers</span>
+                    <div class="flex items-baseline gap-1"><span id="kpi-customers"
+                            class="text-lg font-bold text-slate-700">0</span><span
+                            class="text-[10px] text-slate-400">Unique</span></div>
+                </div>
+            </section>
+
+            <!-- Main Content -->
+            <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
+                <div class="lg:col-span-2 space-y-6">
+                    <div class="flex items-center justify-between">
+                        <h3 class="text-sm font-extrabold text-slate-800 uppercase tracking-widest">Ownership Matrix
+                        </h3>
+                        <span class="text-[9px] text-slate-400 font-medium bg-slate-100 px-2 py-1 rounded">Click row for
+                            details</span>
+                    </div>
+                    <div class="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden">
+                        <div class="overflow-x-auto custom-scroll">
+                            <table class="w-full text-left border-collapse min-w-[600px]">
+                                <thead>
+                                    <tr
+                                        class="bg-slate-50/80 border-b border-slate-100 text-[10px] font-bold text-slate-400 uppercase tracking-widest">
+                                        <th class="px-6 py-4">Owner</th>
+                                        <th class="px-6 py-4">Volume (Boxes)</th>
+                                        <th class="px-6 py-4">Sales vs Goal</th>
+                                        <th class="px-6 py-4">Margin vs Goal</th>
+                                        <th class="px-6 py-4 text-right">Yield</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="mark-breakdown-body" class="divide-y divide-slate-50"></tbody>
+                            </table>
+                        </div>
+                    </div>
+                    <div class="bg-white border border-slate-200 rounded-2xl p-6 shadow-sm">
+                        <h3 class="text-xs font-extrabold text-slate-800 uppercase tracking-widest mb-4">Cumulative
+                            Sales
+                            Growth (Closed GMV)</h3>
+                        <div class="chart-container"><canvas id="trendChart"></canvas></div>
+                    </div>
+
+                    <!-- NEW SOURCE MARKET CHART -->
+                    <div class="bg-white border border-slate-200 rounded-2xl p-6 shadow-sm mt-6">
+                        <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-4">
+                            <h3 class="text-xs font-extrabold text-slate-800 uppercase tracking-widest">Source Market
+                                Growth
+                            </h3>
+
+                            <!-- Checkbox Dropdown -->
+                            <div class="flex items-center gap-2 relative">
+                                <span class="text-[9px] text-slate-400 font-bold uppercase">Filter:</span>
+                                <div class="relative">
+                                    <button onclick="toggleSourceDropdown(event)"
+                                        class="flex items-center justify-between w-48 text-xs border border-slate-300 rounded-lg px-3 py-2 bg-slate-50 hover:bg-slate-100 font-bold text-slate-700 transition-colors focus:outline-none focus:ring-2 focus:ring-blue-100">
+                                        <span id="source-filter-label" class="truncate">All Sources</span>
+                                        <i class="fas fa-chevron-down text-slate-400 text-[10px] ml-2"></i>
+                                    </button>
+
+                                    <div id="source-dropdown-menu"
+                                        class="hidden absolute top-full right-0 mt-2 w-56 bg-white border border-slate-200 rounded-xl shadow-xl z-20 p-2 max-h-60 overflow-y-auto custom-scroll animate-in fade-in zoom-in-95 duration-100 origin-top-right">
+                                        <!-- Checkboxes injected here -->
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="chart-container"><canvas id="sourceChart"></canvas></div>
+                    </div>
+                </div>
+                <div class="space-y-6">
+                    <div class="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm">
+                        <h3 class="text-xs font-extrabold text-slate-800 uppercase tracking-widest mb-4">Top 5 Customers
+                            (Margin)</h3>
+                        <div id="top-customers-list" class="space-y-3"></div>
+                    </div>
+                    <div class="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm">
+                        <h3 class="text-xs font-extrabold text-slate-800 uppercase tracking-widest mb-4">Source Market
+                            Performance</h3>
+                        <div id="source-market-list" class="space-y-3"></div>
+                    </div>
+                    <div class="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm">
+                        <h3 class="text-xs font-extrabold text-slate-800 uppercase tracking-widest mb-4">Trade Corridor
+                            Analysis</h3>
+                        <div id="corridor-list" class="space-y-3"></div>
+                    </div>
                 </div>
             </div>
-            <div class="space-y-6">
-                <div class="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm">
-                    <h3 class="text-xs font-extrabold text-slate-800 uppercase tracking-widest mb-4">Top 5 Customers
-                        (Margin)</h3>
-                    <div id="top-customers-list" class="space-y-3"></div>
+
+            <div id="empty-state"
+                class="hidden py-24 px-6 text-center bg-white border-2 border-dashed border-slate-200 rounded-[2rem] mx-auto mt-8">
+                <div
+                    class="w-20 h-20 bg-slate-50 text-slate-300 rounded-3xl flex items-center justify-center mx-auto mb-6">
+                    <i class="fas fa-database text-3xl"></i>
                 </div>
-                <div class="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm">
-                    <h3 class="text-xs font-extrabold text-slate-800 uppercase tracking-widest mb-4">Source Market
-                        Performance</h3>
-                    <div id="source-market-list" class="space-y-3"></div>
-                </div>
-                <div class="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm">
-                    <h3 class="text-xs font-extrabold text-slate-800 uppercase tracking-widest mb-4">Trade Corridor
-                        Analysis</h3>
-                    <div id="corridor-list" class="space-y-3"></div>
-                </div>
+                <h3 class="text-xl font-extrabold text-slate-800">Initializing...</h3>
+                <div class="text-sm text-slate-500 mt-2">Connecting to data source...</div>
             </div>
-        </div>
+        </main>
 
-        <div id="empty-state"
-            class="hidden py-24 px-6 text-center bg-white border-2 border-dashed border-slate-200 rounded-[2rem] mx-auto mt-8">
-            <div class="w-20 h-20 bg-slate-50 text-slate-300 rounded-3xl flex items-center justify-center mx-auto mb-6">
-                <i class="fas fa-database text-3xl"></i>
-            </div>
-            <h3 class="text-xl font-extrabold text-slate-800">Initializing...</h3>
-            <div class="text-sm text-slate-500 mt-2">Connecting to data source...</div>
-        </div>
-    </main>
-
-    <script>
-        // Compact currency format for Lakhs/Crores
-        const compactRupee = new Intl.NumberFormat('en-IN', {
-            style: 'currency',
-            currency: 'INR',
-            notation: "compact",
-            maximumFractionDigits: 2
-        });
-
-        // Standard format for table drilldowns
-        const standardRupee = new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 });
-
-        const OWNER_ORDER = ["Karan", "Kishore", "Amit / Bharath", "Amit", "Kishore (Known Party)", "Central (Known Party)"];
-        let trendChart = null;
-        let sourceChart = null;
-        let allClosedTransactions = []; // Store raw data for dynamic filtering
-
-        window.addEventListener('DOMContentLoaded', () => {
-            const params = new URLSearchParams(window.location.search);
-            if (params.get('mode') !== 'viewer') document.getElementById('settings-btn').classList.replace('hidden', 'flex');
-            renderTargetSettings();
-            document.getElementById('csv-url').value = window.dbState.csvUrl;
-            fetchCSVData(true);
-            window.addEventListener('db-updated', () => { renderTargetSettings(); fetchCSVData(true); });
-
-            // Close dropdown when clicking outside
-            document.addEventListener('click', function (event) {
-                const dropdown = document.getElementById('source-dropdown-menu');
-                const button = dropdown.previousElementSibling;
-                if (!button.contains(event.target) && !dropdown.contains(event.target)) {
-                    dropdown.classList.add('hidden');
-                }
+        <script>
+            // Compact currency format for Lakhs/Crores
+            const compactRupee = new Intl.NumberFormat('en-IN', {
+                style: 'currency',
+                currency: 'INR',
+                notation: "compact",
+                maximumFractionDigits: 2
             });
-        });
 
-        // Toggle dropdown visibility
-        function toggleSourceDropdown(event) {
-            event.stopPropagation();
-            const menu = document.getElementById('source-dropdown-menu');
-            menu.classList.toggle('hidden');
-        }
+            // Standard format for table drilldowns
+            const standardRupee = new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 });
 
-        // ... existing auth functions ...
-        function renderTargetSettings() {
-            const container = document.getElementById('targets-list');
-            const targets = window.dbState.targets;
-            container.innerHTML = OWNER_ORDER.map(owner => {
-                const label = owner.includes('Known Party') ? `<span>${owner.split(' (')[0]}</span> <span class="text-[8px] text-blue-500 font-bold uppercase ml-1">Known Party</span>` : owner;
-                const t = targets[owner] || { sales: 0, margin: 0, marginPct: 0 };
-                return `
+            const OWNER_ORDER = ["Karan", "Kishore", "Amit / Bharath", "Amit", "Kishore (Known Party)", "Central (Known Party)"];
+            let trendChart = null;
+            let sourceChart = null;
+            let allClosedTransactions = []; // Store raw data for dynamic filtering
+
+            window.addEventListener('DOMContentLoaded', () => {
+                const params = new URLSearchParams(window.location.search);
+                if (params.get('mode') !== 'viewer') document.getElementById('settings-btn').classList.replace('hidden', 'flex');
+                renderTargetSettings();
+                document.getElementById('csv-url').value = window.dbState.csvUrl;
+                fetchCSVData(true);
+                window.addEventListener('db-updated', () => { renderTargetSettings(); fetchCSVData(true); });
+
+                // Close dropdown when clicking outside
+                document.addEventListener('click', function (event) {
+                    const dropdown = document.getElementById('source-dropdown-menu');
+                    const button = dropdown.previousElementSibling;
+                    if (!button.contains(event.target) && !dropdown.contains(event.target)) {
+                        dropdown.classList.add('hidden');
+                    }
+                });
+            });
+
+            // Toggle dropdown visibility
+            function toggleSourceDropdown(event) {
+                event.stopPropagation();
+                const menu = document.getElementById('source-dropdown-menu');
+                menu.classList.toggle('hidden');
+            }
+
+            // ... existing auth functions ...
+            function renderTargetSettings() {
+                const container = document.getElementById('targets-list');
+                const targets = window.dbState.targets;
+                container.innerHTML = OWNER_ORDER.map(owner => {
+                    const label = owner.includes('Known Party') ? `<span>${owner.split(' (')[0]}</span> <span class="text-[8px] text-blue-500 font-bold uppercase ml-1">Known Party</span>` : owner;
+                    const t = targets[owner] || { sales: 0, margin: 0, marginPct: 0 };
+                    return `
                     <div class="p-4 bg-slate-50 rounded-2xl border border-slate-100 space-y-3">
                         <div class="text-[11px] font-extrabold text-slate-800 border-b border-slate-200 pb-2">${label}</div>
                         <div class="grid grid-cols-3 gap-2">
@@ -508,59 +911,59 @@
                             <div><label class="text-[8px] font-bold text-slate-400 uppercase block mb-1">Yield %</label><input type="number" step="0.1" value="${t.marginPct}" class="w-full px-2 py-1.5 text-xs font-bold border border-slate-200 rounded-lg outline-none" onchange="updateLocalTarget('${owner}', 'marginPct', this.value)"></div>
                         </div>
                     </div>`;
-            }).join('');
-        }
-
-        function updateLocalTarget(owner, key, val) { if (!window.dbState.targets[owner]) window.dbState.targets[owner] = {}; window.dbState.targets[owner][key] = parseFloat(val) || 0; }
-        async function updateGlobalPrice(val) { window.dbState.estPricePerBox = parseFloat(val) || 0; renderDashboard(window.rawData); if (window.saveToCloud) window.saveToCloud(window.dbState.csvUrl, window.dbState.targets, window.dbState.estPricePerBox); }
-        async function saveAndRefresh() {
-            const url = document.getElementById('csv-url').value.trim();
-            window.dbState.csvUrl = url;
-            if (window.saveToCloud) window.saveToCloud(url, window.dbState.targets, window.dbState.estPricePerBox);
-            toggleConfig(); fetchCSVData();
-        }
-        function toggleConfig() { document.getElementById('config-sidebar').classList.toggle('translate-x-full'); }
-        window.showToast = (msg) => { const t = document.getElementById('toast'); t.innerText = msg; t.classList.add('show'); setTimeout(() => t.classList.remove('show'), 3000); };
-        function copyShareLink() {
-            if (window.location.protocol === 'file:' || window.location.protocol === 'blob:') return window.showToast("Host file to share link.");
-            const url = `${window.location.href.split('?')[0]}?mode=viewer`;
-            navigator.clipboard.writeText(url).then(() => window.showToast("Link Copied!"));
-        }
-        function manualRefresh() { fetchCSVData(true); }
-
-        // MODAL LOGIC
-        function showDrillDown(owner) {
-            const modal = document.getElementById('drilldown-modal');
-            const title = document.getElementById('modal-title');
-            const body = document.getElementById('modal-body');
-
-            title.innerText = owner + " - Trade Breakdown";
-
-            // Filter raw data (No Date Filter - All data passes)
-            // Use current global filter
-            const monthFilter = document.getElementById('month-filter').value;
-            let currentData = window.rawData;
-            if (monthFilter !== 'All') {
-                currentData = window.rawData.filter(r => r[1]?.trim() === monthFilter);
+                }).join('');
             }
 
-            const filteredRows = currentData.filter(row => {
-                const rowOwner = getOwner(row);
-                return rowOwner === owner;
-            });
+            function updateLocalTarget(owner, key, val) { if (!window.dbState.targets[owner]) window.dbState.targets[owner] = {}; window.dbState.targets[owner][key] = parseFloat(val) || 0; }
+            async function updateGlobalPrice(val) { window.dbState.estPricePerBox = parseFloat(val) || 0; renderDashboard(window.rawData); if (window.saveToCloud) window.saveToCloud(window.dbState.csvUrl, window.dbState.targets, window.dbState.estPricePerBox); }
+            async function saveAndRefresh() {
+                const url = document.getElementById('csv-url').value.trim();
+                window.dbState.csvUrl = url;
+                if (window.saveToCloud) window.saveToCloud(url, window.dbState.targets, window.dbState.estPricePerBox);
+                toggleConfig(); fetchCSVData();
+            }
+            function toggleConfig() { document.getElementById('config-sidebar').classList.toggle('translate-x-full'); }
+            window.showToast = (msg) => { const t = document.getElementById('toast'); t.innerText = msg; t.classList.add('show'); setTimeout(() => t.classList.remove('show'), 3000); };
+            function copyShareLink() {
+                if (window.location.protocol === 'file:' || window.location.protocol === 'blob:') return window.showToast("Host file to share link.");
+                const url = `${window.location.href.split('?')[0]}?mode=viewer`;
+                navigator.clipboard.writeText(url).then(() => window.showToast("Link Copied!"));
+            }
+            function manualRefresh() { fetchCSVData(true); }
 
-            body.innerHTML = filteredRows.length ? '' : '<tr><td colspan="6" class="p-4 text-center text-slate-400">No records found.</td></tr>';
+            // MODAL LOGIC
+            function showDrillDown(owner) {
+                const modal = document.getElementById('drilldown-modal');
+                const title = document.getElementById('modal-title');
+                const body = document.getElementById('modal-body');
 
-            filteredRows.forEach(row => {
-                const closureDate = row[1] || '-';
-                const dispatchDate = row[0] || '-';
-                const cust = row[2] || 'Unknown';
-                const mark = row[10] || '-';
-                const boxes = parseFloat(row[6]?.replace(/[^\d.-]/g, '')) || 0;
-                const sales = parseFloat(row[8]?.replace(/[^\d.-]/g, '')) || 0;
-                const margin = parseFloat(row[9]?.replace(/[^\d.-]/g, '')) || 0;
+                title.innerText = owner + " - Trade Breakdown";
 
-                body.insertAdjacentHTML('beforeend', `
+                // Filter raw data (No Date Filter - All data passes)
+                // Use current global filter
+                const monthFilter = document.getElementById('month-filter').value;
+                let currentData = window.rawData;
+                if (monthFilter !== 'All') {
+                    currentData = window.rawData.filter(r => r[1]?.trim() === monthFilter);
+                }
+
+                const filteredRows = currentData.filter(row => {
+                    const rowOwner = getOwner(row);
+                    return rowOwner === owner;
+                });
+
+                body.innerHTML = filteredRows.length ? '' : '<tr><td colspan="6" class="p-4 text-center text-slate-400">No records found.</td></tr>';
+
+                filteredRows.forEach(row => {
+                    const closureDate = row[1] || '-';
+                    const dispatchDate = row[0] || '-';
+                    const cust = row[2] || 'Unknown';
+                    const mark = row[10] || '-';
+                    const boxes = parseFloat(row[6]?.replace(/[^\d.-]/g, '')) || 0;
+                    const sales = parseFloat(row[8]?.replace(/[^\d.-]/g, '')) || 0;
+                    const margin = parseFloat(row[9]?.replace(/[^\d.-]/g, '')) || 0;
+
+                    body.insertAdjacentHTML('beforeend', `
                     <tr class="hover:bg-slate-50">
                         <td class="p-3 border-b">${closureDate}</td>
                         <td class="p-3 border-b text-slate-400">${dispatchDate}</td>
@@ -571,512 +974,512 @@
                         <td class="p-3 border-b text-right ${margin >= 0 ? 'text-emerald-600' : 'text-red-500'}">${standardRupee.format(margin)}</td>
                     </tr>
                 `);
-            });
+                });
 
-            modal.classList.remove('hidden');
-        }
-
-        function closeModal() {
-            document.getElementById('drilldown-modal').classList.add('hidden');
-        }
-
-        function getOwner(row) {
-            const mode = row[4]?.trim().toLowerCase() || "";
-            const mark = row[10]?.trim() || "";
-            const market = row[11]?.trim() || "";
-            const isKnown = mode.includes("known") || (row[5] && row[5].toLowerCase().includes("known"));
-
-            // 1. GLOBAL EXCLUSION: POMO NW / E variants
-            // These are hidden from the matrix completely (marked as EXCLUDED)
-            // regardless of whether they are Known Party or Trade.
-            if (mark.toUpperCase().includes("POMO")) {
-                const mUp = mark.toUpperCase();
-                // Matches: "POMO NW", "POMO E", "POMO NW&E", "POMO NW & E"
-                if (mUp.includes("NW") || mUp.includes(" E") || mUp.endsWith(" E") || mUp.includes("&E")) {
-                    return "EXCLUDED";
-                }
+                modal.classList.remove('hidden');
             }
 
-            // 2. Known Party Logic (Central / Kishore)
-            if (mark === "Mango" || (mark === "Apple" && isKnown)) return "Central (Known Party)";
-            if (mark.includes("POMO") && isKnown) return "Kishore (Known Party)";
-
-            // 3. Specific Marks
-            if (mark === "Apple") return "Amit / Bharath";
-            if (mark === "Kinnow") return "Amit";
-
-            // 4. Remaining POMO Logic (Karan / Kishore)
-            if (mark.includes("POMO")) {
-                if (market === "Rajasthan" || market === "Gujarat") return "Karan";
-                return "Kishore";
+            function closeModal() {
+                document.getElementById('drilldown-modal').classList.add('hidden');
             }
 
-            // 5. Catch-all
-            return mark || "Others";
-        }
+            function getOwner(row) {
+                const mode = row[4]?.trim().toLowerCase() || "";
+                const mark = row[10]?.trim() || "";
+                const market = row[11]?.trim() || "";
+                const isKnown = mode.includes("known") || (row[5] && row[5].toLowerCase().includes("known"));
 
-        async function fetchCSVData(isBackground) {
-            const url = window.dbState.csvUrl;
-            if (!url) return;
-            const icon = document.getElementById('nav-sync-icon');
-            if (icon) icon.classList.add('fa-spin');
-
-            const tryFetch = async (fetchUrl) => {
-                const controller = new AbortController();
-                const id = setTimeout(() => controller.abort(), 10000);
-                try {
-                    const res = await fetch(fetchUrl, { signal: controller.signal });
-                    clearTimeout(id);
-                    if (!res.ok) throw new Error("HTTP " + res.status);
-                    return await res.text();
-                } catch (e) {
-                    clearTimeout(id);
-                    throw e;
+                // 1. GLOBAL EXCLUSION: POMO NW / E variants
+                // These are hidden from the matrix completely (marked as EXCLUDED)
+                // regardless of whether they are Known Party or Trade.
+                if (mark.toUpperCase().includes("POMO")) {
+                    const mUp = mark.toUpperCase();
+                    // Matches: "POMO NW", "POMO E", "POMO NW&E", "POMO NW & E"
+                    if (mUp.includes("NW") || mUp.includes(" E") || mUp.endsWith(" E") || mUp.includes("&E")) {
+                        return "EXCLUDED";
+                    }
                 }
-            };
 
-            try {
-                let fetchUrl = url;
-                if ((url.includes('/edit') || url.includes('usp=sharing')) && !url.includes('export?format=csv')) {
-                    fetchUrl = url.split('/edit')[0] + '/export?format=csv';
+                // 2. Known Party Logic (Central / Kishore)
+                if (mark === "Mango" || (mark === "Apple" && isKnown)) return "Central (Known Party)";
+                if (mark.includes("POMO") && isKnown) return "Kishore (Known Party)";
+
+                // 3. Specific Marks
+                if (mark === "Apple") return "Amit / Bharath";
+                if (mark === "Kinnow") return "Amit";
+
+                // 4. Remaining POMO Logic (Karan / Kishore)
+                if (mark.includes("POMO")) {
+                    if (market === "Rajasthan" || market === "Gujarat") return "Karan";
+                    return "Kishore";
                 }
-                const directUrl = fetchUrl + (fetchUrl.includes('?') ? '&' : '?') + 'cb=' + Date.now();
 
-                let text;
-                try {
-                    updateStatus('Connecting...', 'bg-slate-300');
-                    text = await tryFetch(directUrl);
-                } catch (e1) {
+                // 5. Catch-all
+                return mark || "Others";
+            }
+
+            async function fetchCSVData(isBackground) {
+                const url = window.dbState.csvUrl;
+                if (!url) return;
+                const icon = document.getElementById('nav-sync-icon');
+                if (icon) icon.classList.add('fa-spin');
+
+                const tryFetch = async (fetchUrl) => {
+                    const controller = new AbortController();
+                    const id = setTimeout(() => controller.abort(), 10000);
                     try {
-                        updateStatus('Using Proxy 1...', 'bg-yellow-400');
-                        const proxyUrl1 = 'https://corsproxy.io/?' + encodeURIComponent(fetchUrl);
-                        text = await tryFetch(proxyUrl1);
-                    } catch (e2) {
-                        updateStatus('Using Proxy 2...', 'bg-orange-400');
-                        const proxyUrl2 = 'https://api.allorigins.win/raw?url=' + encodeURIComponent(fetchUrl);
-                        text = await tryFetch(proxyUrl2);
+                        const res = await fetch(fetchUrl, { signal: controller.signal });
+                        clearTimeout(id);
+                        if (!res.ok) throw new Error("HTTP " + res.status);
+                        return await res.text();
+                    } catch (e) {
+                        clearTimeout(id);
+                        throw e;
                     }
-                }
+                };
 
-                if (!text || text.trim().toLowerCase().startsWith('<!doctype')) {
-                    throw new Error("Invalid Data Received (Not CSV)");
-                }
+                try {
+                    let fetchUrl = url;
+                    if ((url.includes('/edit') || url.includes('usp=sharing')) && !url.includes('export?format=csv')) {
+                        fetchUrl = url.split('/edit')[0] + '/export?format=csv';
+                    }
+                    const directUrl = fetchUrl + (fetchUrl.includes('?') ? '&' : '?') + 'cb=' + Date.now();
 
-                const rows = parseCSV(text).slice(1).filter(r => {
-                    if (!r || r.length <= 10) return false;
-                    return r[0] || r[2] || r[6] || r[8] || r[10];
+                    let text;
+                    try {
+                        updateStatus('Connecting...', 'bg-slate-300');
+                        text = await tryFetch(directUrl);
+                    } catch (e1) {
+                        try {
+                            updateStatus('Using Proxy 1...', 'bg-yellow-400');
+                            const proxyUrl1 = 'https://corsproxy.io/?' + encodeURIComponent(fetchUrl);
+                            text = await tryFetch(proxyUrl1);
+                        } catch (e2) {
+                            updateStatus('Using Proxy 2...', 'bg-orange-400');
+                            const proxyUrl2 = 'https://api.allorigins.win/raw?url=' + encodeURIComponent(fetchUrl);
+                            text = await tryFetch(proxyUrl2);
+                        }
+                    }
+
+                    if (!text || text.trim().toLowerCase().startsWith('<!doctype')) {
+                        throw new Error("Invalid Data Received (Not CSV)");
+                    }
+
+                    const rows = parseCSV(text).slice(1).filter(r => {
+                        if (!r || r.length <= 10) return false;
+                        return r[0] || r[2] || r[6] || r[8] || r[10];
+                    });
+
+                    if (rows.length > 0) {
+                        window.rawData = rows;
+                        populateMonthFilter(rows);
+                        filterAndRender();
+                        updateStatus('Cloud Synced', 'bg-emerald-500');
+                        document.getElementById('empty-state').classList.add('hidden');
+                        document.getElementById('last-sync-time').innerText = `Synced ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
+                        document.getElementById('global-est-price').value = window.dbState.estPricePerBox || 1000;
+                    } else {
+                        throw new Error("CSV appears empty");
+                    }
+                } catch (e) {
+                    console.error("All sync methods failed", e);
+                    updateStatus('Sync Failed', 'bg-red-500');
+                    if (!isBackground) window.showToast("Sync Error: " + e.message);
+                } finally { if (icon) icon.classList.remove('fa-spin'); }
+            }
+
+            function parseCSV(text) {
+                return text.split(/\r?\n/).map(l => {
+                    const res = []; let cell = '', q = false;
+                    for (let c of l) {
+                        if (c === '"') { if (q && l[l.indexOf(c) + 1] === '"') cell += '"'; else q = !q; }
+                        else if (c === ',' && !q) { res.push(cell.trim()); cell = ''; } else cell += c;
+                    }
+                    res.push(cell.trim()); return res;
+                });
+            }
+
+            function updateStatus(text, color) {
+                const tag = document.getElementById('status-tag');
+                tag.innerHTML = `<span class="w-1.5 h-1.5 rounded-full ${color}"></span> ${text}`;
+                tag.className = `text-[9px] font-bold uppercase flex items-center gap-1.5 ${color.replace('bg-', 'text-')}`;
+            }
+
+            function parseMonth(mStr) {
+                const d = new Date("1 " + mStr);
+                return isNaN(d) ? 0 : d.getTime();
+            }
+
+            function populateMonthFilter(rows) {
+                const filter = document.getElementById('month-filter');
+                const currentSelection = filter.value;
+                const months = new Set();
+
+                rows.forEach(r => {
+                    const m = r[1]?.trim();
+                    if (m) months.add(m);
                 });
 
-                if (rows.length > 0) {
-                    window.rawData = rows;
-                    populateMonthFilter(rows);
-                    filterAndRender();
-                    updateStatus('Cloud Synced', 'bg-emerald-500');
-                    document.getElementById('empty-state').classList.add('hidden');
-                    document.getElementById('last-sync-time').innerText = `Synced ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
-                    document.getElementById('global-est-price').value = window.dbState.estPricePerBox || 1000;
-                } else {
-                    throw new Error("CSV appears empty");
-                }
-            } catch (e) {
-                console.error("All sync methods failed", e);
-                updateStatus('Sync Failed', 'bg-red-500');
-                if (!isBackground) window.showToast("Sync Error: " + e.message);
-            } finally { if (icon) icon.classList.remove('fa-spin'); }
-        }
-
-        function parseCSV(text) {
-            return text.split(/\r?\n/).map(l => {
-                const res = []; let cell = '', q = false;
-                for (let c of l) {
-                    if (c === '"') { if (q && l[l.indexOf(c) + 1] === '"') cell += '"'; else q = !q; }
-                    else if (c === ',' && !q) { res.push(cell.trim()); cell = ''; } else cell += c;
-                }
-                res.push(cell.trim()); return res;
-            });
-        }
-
-        function updateStatus(text, color) {
-            const tag = document.getElementById('status-tag');
-            tag.innerHTML = `<span class="w-1.5 h-1.5 rounded-full ${color}"></span> ${text}`;
-            tag.className = `text-[9px] font-bold uppercase flex items-center gap-1.5 ${color.replace('bg-', 'text-')}`;
-        }
-
-        function parseMonth(mStr) {
-            const d = new Date("1 " + mStr);
-            return isNaN(d) ? 0 : d.getTime();
-        }
-
-        function populateMonthFilter(rows) {
-            const filter = document.getElementById('month-filter');
-            const currentSelection = filter.value;
-            const months = new Set();
-
-            rows.forEach(r => {
-                const m = r[1]?.trim();
-                if (m) months.add(m);
-            });
-
-            const sortedMonths = Array.from(months).sort((a, b) => {
-                const dateA = parseMonth(a);
-                const dateB = parseMonth(b);
-                return dateB - dateA; // Descending (Newest first)
-            });
-
-            filter.innerHTML = '<option value="All">All Months</option>';
-            sortedMonths.forEach(m => {
-                const opt = document.createElement('option');
-                opt.value = m;
-                opt.text = m;
-                filter.appendChild(opt);
-            });
-
-            // Smart Default Logic: Prioritize Current Month
-            if (!window.monthFilterInitialized && sortedMonths.length > 0) {
-                const now = new Date();
-                const currentMonthLong = now.toLocaleString('en-US', { month: 'long' }); // "January"
-                const currentMonthShort = now.toLocaleString('en-US', { month: 'short' }); // "Jan"
-
-                // Find matching month (prioritize latest year if duplicates exist due to sorting)
-                const currentMatch = sortedMonths.find(m => {
-                    const lowerM = m.toLowerCase();
-                    return lowerM.includes(currentMonthLong.toLowerCase()) ||
-                        lowerM.includes(currentMonthShort.toLowerCase());
+                const sortedMonths = Array.from(months).sort((a, b) => {
+                    const dateA = parseMonth(a);
+                    const dateB = parseMonth(b);
+                    return dateB - dateA; // Descending (Newest first)
                 });
 
-                if (currentMatch) {
-                    filter.value = currentMatch;
-                } else {
-                    filter.value = sortedMonths[0]; // Fallback to latest if current not found
+                filter.innerHTML = '<option value="All">All Months</option>';
+                sortedMonths.forEach(m => {
+                    const opt = document.createElement('option');
+                    opt.value = m;
+                    opt.text = m;
+                    filter.appendChild(opt);
+                });
+
+                // Smart Default Logic: Prioritize Current Month
+                if (!window.monthFilterInitialized && sortedMonths.length > 0) {
+                    const now = new Date();
+                    const currentMonthLong = now.toLocaleString('en-US', { month: 'long' }); // "January"
+                    const currentMonthShort = now.toLocaleString('en-US', { month: 'short' }); // "Jan"
+
+                    // Find matching month (prioritize latest year if duplicates exist due to sorting)
+                    const currentMatch = sortedMonths.find(m => {
+                        const lowerM = m.toLowerCase();
+                        return lowerM.includes(currentMonthLong.toLowerCase()) ||
+                            lowerM.includes(currentMonthShort.toLowerCase());
+                    });
+
+                    if (currentMatch) {
+                        filter.value = currentMatch;
+                    } else {
+                        filter.value = sortedMonths[0]; // Fallback to latest if current not found
+                    }
+                    window.monthFilterInitialized = true;
+                } else if (months.has(currentSelection)) {
+                    filter.value = currentSelection;
                 }
-                window.monthFilterInitialized = true;
-            } else if (months.has(currentSelection)) {
-                filter.value = currentSelection;
             }
-        }
 
-        function filterAndRender() {
-            const filter = document.getElementById('month-filter');
-            const val = filter.value;
+            function filterAndRender() {
+                const filter = document.getElementById('month-filter');
+                const val = filter.value;
 
-            let data = window.rawData;
-            if (val !== 'All') {
-                data = window.rawData.filter(r => r[1]?.trim() === val);
+                let data = window.rawData;
+                if (val !== 'All') {
+                    data = window.rawData.filter(r => r[1]?.trim() === val);
+                }
+                renderDashboard(data);
             }
-            renderDashboard(data);
-        }
 
-        function parseDate(dateStr) {
-            if (!dateStr) return null;
-            dateStr = dateStr.trim();
-            const parts = dateStr.split(/[\s,./-]+/).filter(Boolean);
-            const months = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
-            let day, month, year;
+            function parseDate(dateStr) {
+                if (!dateStr) return null;
+                dateStr = dateStr.trim();
+                const parts = dateStr.split(/[\s,./-]+/).filter(Boolean);
+                const months = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
+                let day, month, year;
 
-            if (parts.length === 2) {
-                day = parseInt(parts[0], 10);
-                const mStr = parts[1].replace(/[^a-zA-Z]/g, '').toLowerCase().substring(0, 3);
-                month = months[mStr];
-                year = new Date().getFullYear();
-            }
-            else if (parts.length >= 3) {
-                day = parseInt(parts[0], 10);
-                const monthPart = parts[1];
-                let yPart = parseInt(parts[2], 10);
-                if (yPart < 100) yPart += 2000;
-                year = yPart;
-                if (isNaN(monthPart)) {
-                    const mStr = monthPart.replace(/[^a-zA-Z]/g, '').toLowerCase().substring(0, 3);
+                if (parts.length === 2) {
+                    day = parseInt(parts[0], 10);
+                    const mStr = parts[1].replace(/[^a-zA-Z]/g, '').toLowerCase().substring(0, 3);
                     month = months[mStr];
-                } else {
-                    month = parseInt(monthPart, 10) - 1;
+                    year = new Date().getFullYear();
                 }
+                else if (parts.length >= 3) {
+                    day = parseInt(parts[0], 10);
+                    const monthPart = parts[1];
+                    let yPart = parseInt(parts[2], 10);
+                    if (yPart < 100) yPart += 2000;
+                    year = yPart;
+                    if (isNaN(monthPart)) {
+                        const mStr = monthPart.replace(/[^a-zA-Z]/g, '').toLowerCase().substring(0, 3);
+                        month = months[mStr];
+                    } else {
+                        month = parseInt(monthPart, 10) - 1;
+                    }
+                }
+
+                if (!isNaN(day) && month !== undefined && month >= 0 && !isNaN(year)) {
+                    return new Date(year, month, day);
+                }
+                const d = new Date(dateStr);
+                return isNaN(d.getTime()) ? null : d;
             }
 
-            if (!isNaN(day) && month !== undefined && month >= 0 && !isNaN(year)) {
-                return new Date(year, month, day);
-            }
-            const d = new Date(dateStr);
-            return isNaN(d.getTime()) ? null : d;
-        }
+            // New function to handle Source Chart updates
+            function updateSourceChart() {
+                // Select only the source checkboxes, ignoring the "Select All" one
+                const checkedBoxes = document.querySelectorAll('#source-dropdown-menu input[type="checkbox"]:not(#source-select-all):checked');
+                const selectedOptions = Array.from(checkedBoxes).map(cb => cb.value);
+                const totalBoxes = document.querySelectorAll('#source-dropdown-menu input[type="checkbox"]:not(#source-select-all)').length;
 
-        // New function to handle Source Chart updates
-        function updateSourceChart() {
-            // Select only the source checkboxes, ignoring the "Select All" one
-            const checkedBoxes = document.querySelectorAll('#source-dropdown-menu input[type="checkbox"]:not(#source-select-all):checked');
-            const selectedOptions = Array.from(checkedBoxes).map(cb => cb.value);
-            const totalBoxes = document.querySelectorAll('#source-dropdown-menu input[type="checkbox"]:not(#source-select-all)').length;
+                // Update Label
+                const labelSpan = document.getElementById('source-filter-label');
+                if (selectedOptions.length === 0) {
+                    labelSpan.innerText = "Select Source";
+                } else if (selectedOptions.length === totalBoxes) {
+                    labelSpan.innerText = "All Sources";
+                } else if (selectedOptions.length === 1) {
+                    labelSpan.innerText = selectedOptions[0];
+                } else {
+                    labelSpan.innerText = `${selectedOptions.length} Selected`;
+                }
 
-            // Update Label
-            const labelSpan = document.getElementById('source-filter-label');
-            if (selectedOptions.length === 0) {
-                labelSpan.innerText = "Select Source";
-            } else if (selectedOptions.length === totalBoxes) {
-                labelSpan.innerText = "All Sources";
-            } else if (selectedOptions.length === 1) {
-                labelSpan.innerText = selectedOptions[0];
-            } else {
-                labelSpan.innerText = `${selectedOptions.length} Selected`;
-            }
+                // Filter transactions
+                const filteredTransactions = allClosedTransactions.filter(t => selectedOptions.includes(t.source));
 
-            // Filter transactions
-            const filteredTransactions = allClosedTransactions.filter(t => selectedOptions.includes(t.source));
+                // Aggregate by Date
+                const dailySales = {};
+                filteredTransactions.forEach(t => {
+                    const dateKey = `${t.date.getFullYear()}-${String(t.date.getMonth() + 1).padStart(2, '0')}-${String(t.date.getDate()).padStart(2, '0')}`;
+                    dailySales[dateKey] = (dailySales[dateKey] || 0) + t.sales;
+                });
 
-            // Aggregate by Date
-            const dailySales = {};
-            filteredTransactions.forEach(t => {
-                const dateKey = `${t.date.getFullYear()}-${String(t.date.getMonth() + 1).padStart(2, '0')}-${String(t.date.getDate()).padStart(2, '0')}`;
-                dailySales[dateKey] = (dailySales[dateKey] || 0) + t.sales;
-            });
+                // Prepare chart data
+                const dates = Object.keys(dailySales).sort();
+                const displayDates = dates.map(d => {
+                    const date = new Date(d);
+                    return date.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
+                });
 
-            // Prepare chart data
-            const dates = Object.keys(dailySales).sort();
-            const displayDates = dates.map(d => {
-                const date = new Date(d);
-                return date.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
-            });
+                let runningTotal = 0;
+                const cumulativeData = dates.map(d => {
+                    runningTotal += dailySales[d];
+                    return runningTotal;
+                });
 
-            let runningTotal = 0;
-            const cumulativeData = dates.map(d => {
-                runningTotal += dailySales[d];
-                return runningTotal;
-            });
+                // Destroy old chart
+                if (sourceChart) sourceChart.destroy();
 
-            // Destroy old chart
-            if (sourceChart) sourceChart.destroy();
-
-            // Render new chart
-            sourceChart = new Chart(document.getElementById('sourceChart'), {
-                type: 'line',
-                data: {
-                    labels: displayDates,
-                    datasets: [{
-                        label: 'Cumulative Closed GMV',
-                        data: cumulativeData,
-                        borderColor: '#8b5cf6', // Violet color
-                        backgroundColor: 'rgba(139, 92, 246, 0.15)',
-                        fill: 'origin',
-                        tension: 0.4,
-                        pointRadius: 2,
-                        pointHoverRadius: 4
-                    }]
-                },
-                options: {
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    plugins: {
-                        legend: { display: false },
-                        tooltip: {
-                            callbacks: {
-                                label: (ctx) => ` ₹${compactRupee.format(ctx.raw)}`
-                            }
-                        }
+                // Render new chart
+                sourceChart = new Chart(document.getElementById('sourceChart'), {
+                    type: 'line',
+                    data: {
+                        labels: displayDates,
+                        datasets: [{
+                            label: 'Cumulative Closed GMV',
+                            data: cumulativeData,
+                            borderColor: '#8b5cf6', // Violet color
+                            backgroundColor: 'rgba(139, 92, 246, 0.15)',
+                            fill: 'origin',
+                            tension: 0.4,
+                            pointRadius: 2,
+                            pointHoverRadius: 4
+                        }]
                     },
-                    scales: {
-                        x: {
-                            grid: { display: false },
-                            ticks: { maxTicksLimit: 10, font: { size: 9 } }
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: {
+                            legend: { display: false },
+                            tooltip: {
+                                callbacks: {
+                                    label: (ctx) => ` ₹${compactRupee.format(ctx.raw)}`
+                                }
+                            }
                         },
-                        y: {
-                            beginAtZero: true,
-                            grid: { display: false },
-                            ticks: {
-                                callback: (val) => compactRupee.format(val),
-                                font: { size: 9 }
+                        scales: {
+                            x: {
+                                grid: { display: false },
+                                ticks: { maxTicksLimit: 10, font: { size: 9 } }
+                            },
+                            y: {
+                                beginAtZero: true,
+                                grid: { display: false },
+                                ticks: {
+                                    callback: (val) => compactRupee.format(val),
+                                    font: { size: 9 }
+                                }
                             }
                         }
                     }
-                }
-            });
-        }
+                });
+            }
 
-        function renderDashboard(rows) {
-            let tS = 0, tM = 0, tP = 0, tVol = 0, tOpenBox = 0, tClosedS = 0;
-            const groups = {}, custs = {}, sourceMarkets = {}, corridors = {};
-            const dailySales = {}; // Date -> Sales
-            const clean = v => parseFloat(v?.replace(/[^\d.-]/g, '')) || 0;
+            function renderDashboard(rows) {
+                let tS = 0, tM = 0, tP = 0, tVol = 0, tOpenBox = 0, tClosedS = 0;
+                const groups = {}, custs = {}, sourceMarkets = {}, corridors = {};
+                const dailySales = {}; // Date -> Sales
+                const clean = v => parseFloat(v?.replace(/[^\d.-]/g, '')) || 0;
 
-            // Clear previous raw data
-            allClosedTransactions = [];
-            const uniqueSources = new Set();
+                // Clear previous raw data
+                allClosedTransactions = [];
+                const uniqueSources = new Set();
 
-            rows.forEach(row => {
-                const status = row[5]?.trim().toLowerCase() || "";
-                const s = clean(row[8]), m = clean(row[9]), p = clean(row[7]), b = clean(row[6]);
-                const owner = getOwner(row);
+                rows.forEach(row => {
+                    const status = row[5]?.trim().toLowerCase() || "";
+                    const s = clean(row[8]), m = clean(row[9]), p = clean(row[7]), b = clean(row[6]);
+                    const owner = getOwner(row);
 
-                // ALWAYS add to global totals
-                tS += s; tM += m; tP += p; tVol += b;
+                    // ALWAYS add to global totals
+                    tS += s; tM += m; tP += p; tVol += b;
 
-                // Matrix Grouping: SKIP if EXCLUDED
-                if (owner !== "EXCLUDED") {
-                    if (!groups[owner]) groups[owner] = { s: 0, m: 0, openBox: 0, closedBox: 0, closedS: 0 };
-                    groups[owner].s += s; groups[owner].m += m;
-                }
-
-                const source = row[11]?.trim() || "Unknown";
-
-                if (status === 'closed') {
-                    // Global Closed Sales
-                    tClosedS += s;
-
-                    // Matrix Closed Stats
+                    // Matrix Grouping: SKIP if EXCLUDED
                     if (owner !== "EXCLUDED") {
-                        groups[owner].closedBox += b;
-                        groups[owner].closedS += s;
+                        if (!groups[owner]) groups[owner] = { s: 0, m: 0, openBox: 0, closedBox: 0, closedS: 0 };
+                        groups[owner].s += s; groups[owner].m += m;
                     }
 
-                    // Parse Date for charts (Global)
-                    const closeDate = parseDate(row[12]);
-                    if (closeDate) {
-                        const dateKey = `${closeDate.getFullYear()}-${String(closeDate.getMonth() + 1).padStart(2, '0')}-${String(closeDate.getDate()).padStart(2, '0')}`;
-                        dailySales[dateKey] = (dailySales[dateKey] || 0) + s;
+                    const source = row[11]?.trim() || "Unknown";
 
-                        // Store for Source Chart
-                        allClosedTransactions.push({
-                            date: closeDate,
-                            sales: s,
-                            source: source
-                        });
-                        uniqueSources.add(source);
+                    if (status === 'closed') {
+                        // Global Closed Sales
+                        tClosedS += s;
+
+                        // Matrix Closed Stats
+                        if (owner !== "EXCLUDED") {
+                            groups[owner].closedBox += b;
+                            groups[owner].closedS += s;
+                        }
+
+                        // Parse Date for charts (Global)
+                        const closeDate = parseDate(row[12]);
+                        if (closeDate) {
+                            const dateKey = `${closeDate.getFullYear()}-${String(closeDate.getMonth() + 1).padStart(2, '0')}-${String(closeDate.getDate()).padStart(2, '0')}`;
+                            dailySales[dateKey] = (dailySales[dateKey] || 0) + s;
+
+                            // Store for Source Chart
+                            allClosedTransactions.push({
+                                date: closeDate,
+                                sales: s,
+                                source: source
+                            });
+                            uniqueSources.add(source);
+                        }
+
+                        // Source Market Logic (Col L is Index 11) - ONLY CLOSED BOXES
+                        if (!sourceMarkets[source]) sourceMarkets[source] = { s: 0, b: 0 };
+                        sourceMarkets[source].s += s;
+                        sourceMarkets[source].b += b;
+
+                    } else {
+                        // Global Open Totals
+                        tOpenBox += b;
+
+                        // Matrix Open Stats
+                        if (owner !== "EXCLUDED") {
+                            groups[owner].openBox += b;
+                        }
                     }
 
-                    // Source Market Logic (Col L is Index 11) - ONLY CLOSED BOXES
-                    if (!sourceMarkets[source]) sourceMarkets[source] = { s: 0, b: 0 };
-                    sourceMarkets[source].s += s;
-                    sourceMarkets[source].b += b;
+                    // Customers
+                    const cust = row[2]?.trim() || "Unknown";
+                    if (!custs[cust]) custs[cust] = { s: 0, m: 0 }; custs[cust].s += s; custs[cust].m += m;
 
-                } else {
-                    // Global Open Totals
-                    tOpenBox += b;
+                    // Trade Corridor Logic
+                    const dest = row[3]?.trim() || "Unknown";
+                    const route = `${source} → ${dest}`;
+                    if (!corridors[route]) corridors[route] = { s: 0, m: 0 };
+                    corridors[route].s += s;
+                    corridors[route].m += m;
+                });
 
-                    // Matrix Open Stats
-                    if (owner !== "EXCLUDED") {
-                        groups[owner].openBox += b;
-                    }
-                }
+                // Populate Checkbox Dropdown
+                const menu = document.getElementById('source-dropdown-menu');
+                menu.innerHTML = ''; // Clear existing
 
-                // Customers
-                const cust = row[2]?.trim() || "Unknown";
-                if (!custs[cust]) custs[cust] = { s: 0, m: 0 }; custs[cust].s += s; custs[cust].m += m;
+                // 1. Add "Select All" Checkbox
+                const allLabel = document.createElement('label');
+                allLabel.className = "flex items-center gap-2 p-2 hover:bg-slate-50 rounded-lg cursor-pointer text-xs font-bold text-slate-800 border-b border-slate-100 mb-1 transition-colors select-none";
+                const allCheckbox = document.createElement('input');
+                allCheckbox.type = "checkbox";
+                allCheckbox.id = "source-select-all";
+                allCheckbox.checked = true;
+                allCheckbox.className = "rounded border-slate-300 text-blue-600 focus:ring-blue-500 w-3.5 h-3.5";
 
-                // Trade Corridor Logic
-                const dest = row[3]?.trim() || "Unknown";
-                const route = `${source} → ${dest}`;
-                if (!corridors[route]) corridors[route] = { s: 0, m: 0 };
-                corridors[route].s += s;
-                corridors[route].m += m;
-            });
-
-            // Populate Checkbox Dropdown
-            const menu = document.getElementById('source-dropdown-menu');
-            menu.innerHTML = ''; // Clear existing
-
-            // 1. Add "Select All" Checkbox
-            const allLabel = document.createElement('label');
-            allLabel.className = "flex items-center gap-2 p-2 hover:bg-slate-50 rounded-lg cursor-pointer text-xs font-bold text-slate-800 border-b border-slate-100 mb-1 transition-colors select-none";
-            const allCheckbox = document.createElement('input');
-            allCheckbox.type = "checkbox";
-            allCheckbox.id = "source-select-all";
-            allCheckbox.checked = true;
-            allCheckbox.className = "rounded border-slate-300 text-blue-600 focus:ring-blue-500 w-3.5 h-3.5";
-
-            // "Select All" Logic
-            allCheckbox.onchange = function () {
-                const checkboxes = document.querySelectorAll('#source-dropdown-menu input[type="checkbox"]:not(#source-select-all)');
-                checkboxes.forEach(cb => cb.checked = this.checked);
-                updateSourceChart();
-            };
-
-            allLabel.appendChild(allCheckbox);
-            allLabel.appendChild(document.createTextNode("Select All"));
-            menu.appendChild(allLabel);
-
-            // 2. Add Individual Checkboxes
-            Array.from(uniqueSources).sort().forEach(src => {
-                const label = document.createElement('label');
-                label.className = "flex items-center gap-2 p-2 hover:bg-slate-50 rounded-lg cursor-pointer text-xs font-bold text-slate-600 transition-colors select-none";
-
-                const checkbox = document.createElement('input');
-                checkbox.type = "checkbox";
-                checkbox.value = src;
-                checkbox.checked = true;
-                checkbox.className = "rounded border-slate-300 text-blue-600 focus:ring-blue-500 w-3.5 h-3.5";
-
-                // Individual Logic: Update chart & sync "Select All" state
-                checkbox.onchange = function () {
-                    const allCb = document.getElementById('source-select-all');
+                // "Select All" Logic
+                allCheckbox.onchange = function () {
                     const checkboxes = document.querySelectorAll('#source-dropdown-menu input[type="checkbox"]:not(#source-select-all)');
-                    const allChecked = Array.from(checkboxes).every(c => c.checked);
-
-                    allCb.checked = allChecked;
-                    // Optional: Set indeterminate state if some are checked
-                    allCb.indeterminate = !allChecked && Array.from(checkboxes).some(c => c.checked);
-
+                    checkboxes.forEach(cb => cb.checked = this.checked);
                     updateSourceChart();
                 };
 
-                label.appendChild(checkbox);
-                label.appendChild(document.createTextNode(src));
-                menu.appendChild(label);
-            });
+                allLabel.appendChild(allCheckbox);
+                allLabel.appendChild(document.createTextNode("Select All"));
+                menu.appendChild(allLabel);
 
-            // Initial render of Source Chart
-            updateSourceChart();
+                // 2. Add Individual Checkboxes
+                Array.from(uniqueSources).sort().forEach(src => {
+                    const label = document.createElement('label');
+                    label.className = "flex items-center gap-2 p-2 hover:bg-slate-50 rounded-lg cursor-pointer text-xs font-bold text-slate-600 transition-colors select-none";
 
-            // Top Stats (Compact)
-            document.getElementById('mtd-sales').innerText = compactRupee.format(tClosedS);
-            document.getElementById('mtd-margin').innerText = compactRupee.format(tM);
-            document.getElementById('margin-pct').innerText = (tS ? (tM / tS * 100).toFixed(1) : 0) + '%';
+                    const checkbox = document.createElement('input');
+                    checkbox.type = "checkbox";
+                    checkbox.value = src;
+                    checkbox.checked = true;
+                    checkbox.className = "rounded border-slate-300 text-blue-600 focus:ring-blue-500 w-3.5 h-3.5";
 
-            // Projected (Compact)
-            document.getElementById('total-open-boxes').innerText = tOpenBox.toLocaleString();
-            const proj = tOpenBox * (window.dbState.estPricePerBox || 1000);
-            document.getElementById('projected-open-val').innerText = compactRupee.format(proj);
-            document.getElementById('total-potential-rev').innerText = compactRupee.format(tClosedS + proj);
+                    // Individual Logic: Update chart & sync "Select All" state
+                    checkbox.onchange = function () {
+                        const allCb = document.getElementById('source-select-all');
+                        const checkboxes = document.querySelectorAll('#source-dropdown-menu input[type="checkbox"]:not(#source-select-all)');
+                        const allChecked = Array.from(checkboxes).every(c => c.checked);
 
-            // Secondary Metrics Logic
-            const globalRate = tVol ? (tS / (tVol * 10)) : 0;
-            document.getElementById('kpi-global-rate').innerText = "₹" + globalRate.toFixed(1);
+                        allCb.checked = allChecked;
+                        // Optional: Set indeterminate state if some are checked
+                        allCb.indeterminate = !allChecked && Array.from(checkboxes).some(c => c.checked);
 
-            // Find Best Source Market
-            let bestMarket = { name: "-", rate: 0 };
-            Object.entries(sourceMarkets).forEach(([name, d]) => {
-                const rate = d.b ? (d.s / (d.b * 10)) : 0;
-                if (rate > bestMarket.rate && d.b > 50) {
-                    bestMarket = { name, rate };
-                }
-            });
-            document.getElementById('kpi-top-market').innerText = `${bestMarket.name} (₹${bestMarket.rate.toFixed(1)})`;
+                        updateSourceChart();
+                    };
 
-            document.getElementById('kpi-volume').innerText = tVol.toLocaleString();
-            document.getElementById('kpi-customers').innerText = Object.keys(custs).length;
+                    label.appendChild(checkbox);
+                    label.appendChild(document.createTextNode(src));
+                    menu.appendChild(label);
+                });
 
-            // Matrix
-            const tbody = document.getElementById('mark-breakdown-body');
-            tbody.innerHTML = '';
+                // Initial render of Source Chart
+                updateSourceChart();
 
-            const sortedOwners = Object.keys(groups).sort((a, b) => {
-                const iA = OWNER_ORDER.indexOf(a), iB = OWNER_ORDER.indexOf(b);
-                return (iA === -1 ? 99 : iA) - (iB === -1 ? 99 : iB);
-            });
+                // Top Stats (Compact)
+                document.getElementById('mtd-sales').innerText = compactRupee.format(tClosedS);
+                document.getElementById('mtd-margin').innerText = compactRupee.format(tM);
+                document.getElementById('margin-pct').innerText = (tS ? (tM / tS * 100).toFixed(1) : 0) + '%';
 
-            sortedOwners.forEach(owner => {
-                const d = groups[owner];
-                // Smart Filter: Skip empty owner groups (0 sales, 0 margin, 0 boxes)
-                if (d.s === 0 && d.m === 0 && d.closedBox === 0 && d.openBox === 0) return;
+                // Projected (Compact)
+                document.getElementById('total-open-boxes').innerText = tOpenBox.toLocaleString();
+                const proj = tOpenBox * (window.dbState.estPricePerBox || 1000);
+                document.getElementById('projected-open-val').innerText = compactRupee.format(proj);
+                document.getElementById('total-potential-rev').innerText = compactRupee.format(tClosedS + proj);
 
-                const t = window.dbState.targets[owner] || { sales: 0, margin: 0, marginPct: 0 };
-                const eff = d.s ? (d.m / d.s * 100) : 0;
+                // Secondary Metrics Logic
+                const globalRate = tVol ? (tS / (tVol * 10)) : 0;
+                document.getElementById('kpi-global-rate').innerText = "₹" + globalRate.toFixed(1);
 
-                const sPct = (t.sales * 100000) ? Math.min((d.s / (t.sales * 100000) * 100), 100) : 0;
-                const mPct = (t.margin * 100000) ? Math.min((d.m / (t.margin * 100000) * 100), 100) : 0;
+                // Find Best Source Market
+                let bestMarket = { name: "-", rate: 0 };
+                Object.entries(sourceMarkets).forEach(([name, d]) => {
+                    const rate = d.b ? (d.s / (d.b * 10)) : 0;
+                    if (rate > bestMarket.rate && d.b > 50) {
+                        bestMarket = { name, rate };
+                    }
+                });
+                document.getElementById('kpi-top-market').innerText = `${bestMarket.name} (₹${bestMarket.rate.toFixed(1)})`;
 
-                const nameDisplay = owner.includes('Known') ? `<span>${owner.split(' (')[0]}</span><br><span class="text-[8px] text-blue-500 font-bold uppercase">Known Party</span>` : owner;
+                document.getElementById('kpi-volume').innerText = tVol.toLocaleString();
+                document.getElementById('kpi-customers').innerText = Object.keys(custs).length;
 
-                const rowClass = "hover:bg-slate-50/50 transition-colors border-b border-slate-100 last:border-0 clickable-row";
+                // Matrix
+                const tbody = document.getElementById('mark-breakdown-body');
+                tbody.innerHTML = '';
 
-                tbody.insertAdjacentHTML('beforeend', `
+                const sortedOwners = Object.keys(groups).sort((a, b) => {
+                    const iA = OWNER_ORDER.indexOf(a), iB = OWNER_ORDER.indexOf(b);
+                    return (iA === -1 ? 99 : iA) - (iB === -1 ? 99 : iB);
+                });
+
+                sortedOwners.forEach(owner => {
+                    const d = groups[owner];
+                    // Smart Filter: Skip empty owner groups (0 sales, 0 margin, 0 boxes)
+                    if (d.s === 0 && d.m === 0 && d.closedBox === 0 && d.openBox === 0) return;
+
+                    const t = window.dbState.targets[owner] || { sales: 0, margin: 0, marginPct: 0 };
+                    const eff = d.s ? (d.m / d.s * 100) : 0;
+
+                    const sPct = (t.sales * 100000) ? Math.min((d.s / (t.sales * 100000) * 100), 100) : 0;
+                    const mPct = (t.margin * 100000) ? Math.min((d.m / (t.margin * 100000) * 100), 100) : 0;
+
+                    const nameDisplay = owner.includes('Known') ? `<span>${owner.split(' (')[0]}</span><br><span class="text-[8px] text-blue-500 font-bold uppercase">Known Party</span>` : owner;
+
+                    const rowClass = "hover:bg-slate-50/50 transition-colors border-b border-slate-100 last:border-0 clickable-row";
+
+                    tbody.insertAdjacentHTML('beforeend', `
                     <tr class="${rowClass}" onclick="showDrillDown('${owner}')">
                         <td class="px-6 py-5 align-top"><span class="text-sm font-extrabold text-slate-800">${nameDisplay}</span></td>
                         <td class="px-6 py-5 align-top text-center">
@@ -1108,22 +1511,22 @@
                         </td>
                     </tr>
                 `);
-            });
+                });
 
-            // Side panels - Top Customers
-            const topC = document.getElementById('top-customers-list'); topC.innerHTML = '';
-            Object.entries(custs).sort((a, b) => b[1].m - a[1].m).slice(0, 5).forEach(([n, d], i) => topC.insertAdjacentHTML('beforeend', `<div class="flex justify-between items-center p-2 border-b text-[10px]"><div class="font-bold w-4 text-slate-400">#${i + 1}</div><div class="flex-1 font-bold text-slate-700 truncate mr-2">${n}</div><div class="font-bold text-emerald-600">${compactRupee.format(d.m)}</div></div>`));
+                // Side panels - Top Customers
+                const topC = document.getElementById('top-customers-list'); topC.innerHTML = '';
+                Object.entries(custs).sort((a, b) => b[1].m - a[1].m).slice(0, 5).forEach(([n, d], i) => topC.insertAdjacentHTML('beforeend', `<div class="flex justify-between items-center p-2 border-b text-[10px]"><div class="font-bold w-4 text-slate-400">#${i + 1}</div><div class="flex-1 font-bold text-slate-700 truncate mr-2">${n}</div><div class="font-bold text-emerald-600">${compactRupee.format(d.m)}</div></div>`));
 
-            // Side panels - Source Market Performance
-            const sourceMList = document.getElementById('source-market-list'); sourceMList.innerHTML = '';
-            const marketList = Object.entries(sourceMarkets).map(([n, d]) => ({
-                name: n,
-                rate: d.b ? (d.s / (d.b * 10)) : 0,
-                vol: d.b
-            })).sort((a, b) => b.rate - a.rate);
+                // Side panels - Source Market Performance
+                const sourceMList = document.getElementById('source-market-list'); sourceMList.innerHTML = '';
+                const marketList = Object.entries(sourceMarkets).map(([n, d]) => ({
+                    name: n,
+                    rate: d.b ? (d.s / (d.b * 10)) : 0,
+                    vol: d.b
+                })).sort((a, b) => b.rate - a.rate);
 
-            marketList.forEach(m => {
-                sourceMList.insertAdjacentHTML('beforeend', `
+                marketList.forEach(m => {
+                    sourceMList.insertAdjacentHTML('beforeend', `
                     <div class="p-2 border rounded mb-2 bg-slate-50">
                         <div class="flex justify-between items-center mb-1">
                             <span class="text-[10px] font-black text-slate-800">${m.name}</span>
@@ -1135,12 +1538,12 @@
                         </div>
                     </div>
                 `);
-            });
+                });
 
-            // Side panels - Trade Corridor (Restored)
-            const corrList = document.getElementById('corridor-list'); corrList.innerHTML = '';
-            Object.entries(corridors).sort((a, b) => b[1].m - a[1].m).slice(0, 5).forEach(([n, d]) => {
-                corrList.insertAdjacentHTML('beforeend', `
+                // Side panels - Trade Corridor (Restored)
+                const corrList = document.getElementById('corridor-list'); corrList.innerHTML = '';
+                Object.entries(corridors).sort((a, b) => b[1].m - a[1].m).slice(0, 5).forEach(([n, d]) => {
+                    corrList.insertAdjacentHTML('beforeend', `
                     <div class="p-2 border rounded mb-2 hover:bg-slate-50 transition-colors">
                         <div class="flex justify-between text-[10px] font-bold"><span class="text-slate-700 truncate max-w-[150px]">${n}</span><span class="text-blue-600">${compactRupee.format(d.m)}</span></div>
                         <div class="text-[9px] text-slate-400 mt-1 flex justify-between">
@@ -1149,67 +1552,86 @@
                         </div>
                     </div>
                 `);
-            });
+                });
 
-            // CHART: Water Flow (Cumulative GMV Daily)
-            if (trendChart) trendChart.destroy();
+                // CHART: Water Flow (Cumulative GMV Daily)
+                if (trendChart) trendChart.destroy();
 
-            const dates = Object.keys(dailySales).sort();
-            const displayDates = dates.map(d => {
-                const date = new Date(d);
-                return date.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
-            });
+                const dates = Object.keys(dailySales).sort();
+                const displayDates = dates.map(d => {
+                    const date = new Date(d);
+                    return date.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
+                });
 
-            let runningTotal = 0;
-            const cumulativeData = dates.map(d => {
-                runningTotal += dailySales[d];
-                return runningTotal;
-            });
+                let runningTotal = 0;
+                const cumulativeData = dates.map(d => {
+                    runningTotal += dailySales[d];
+                    return runningTotal;
+                });
 
-            trendChart = new Chart(document.getElementById('trendChart'), {
-                type: 'line',
-                data: {
-                    labels: displayDates,
-                    datasets: [{
-                        label: 'Cumulative Closed GMV',
-                        data: cumulativeData,
-                        borderColor: '#2563eb',
-                        backgroundColor: 'rgba(37, 99, 235, 0.15)', // Water effect
-                        fill: 'origin',
-                        tension: 0.4,
-                        pointRadius: 2,
-                        pointHoverRadius: 4
-                    }]
-                },
-                options: {
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    plugins: {
-                        legend: { display: false },
-                        tooltip: {
-                            callbacks: {
-                                label: (ctx) => ` ₹${compactRupee.format(ctx.raw)}`
-                            }
-                        }
+                trendChart = new Chart(document.getElementById('trendChart'), {
+                    type: 'line',
+                    data: {
+                        labels: displayDates,
+                        datasets: [{
+                            label: 'Cumulative Closed GMV',
+                            data: cumulativeData,
+                            borderColor: '#2563eb',
+                            backgroundColor: 'rgba(37, 99, 235, 0.15)', // Water effect
+                            fill: 'origin',
+                            tension: 0.4,
+                            pointRadius: 2,
+                            pointHoverRadius: 4
+                        }]
                     },
-                    scales: {
-                        x: {
-                            grid: { display: false },
-                            ticks: { maxTicksLimit: 10, font: { size: 9 } }
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: {
+                            legend: { display: false },
+                            tooltip: {
+                                callbacks: {
+                                    label: (ctx) => ` ₹${compactRupee.format(ctx.raw)}`
+                                }
+                            }
                         },
-                        y: {
-                            beginAtZero: true,
-                            grid: { display: false },
-                            ticks: {
-                                callback: (val) => compactRupee.format(val),
-                                font: { size: 9 }
+                        scales: {
+                            x: {
+                                grid: { display: false },
+                                ticks: { maxTicksLimit: 10, font: { size: 9 } }
+                            },
+                            y: {
+                                beginAtZero: true,
+                                grid: { display: false },
+                                ticks: {
+                                    callback: (val) => compactRupee.format(val),
+                                    font: { size: 9 }
+                                }
                             }
                         }
                     }
+                });
+            }
+
+            // Helper function for adding user from form
+            function addUserFromForm() {
+                const emailInput = document.getElementById('add-user-email');
+                const roleSelect = document.getElementById('add-user-role');
+                if (emailInput && roleSelect) {
+                    const email = emailInput.value.trim();
+                    const role = roleSelect.value;
+                    if (email) {
+                        addUser(email, role);
+                        emailInput.value = '';
+                    } else {
+                        window.showToast?.('Please enter an email address');
+                    }
                 }
-            });
-        }
-    </script>
+            }
+        </script>
+
+    </div> <!-- End dashboard-container -->
+
 </body>
 
 </html>
