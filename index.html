@@ -9,8 +9,11 @@
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
 
-    <!-- RBAC Authentication System -->
+    <!-- RBAC & Cloud Sync System -->
     <script>
+        // ========== CLOUD CONFIGURATION ==========
+        const CLOUD_API_URL = "https://script.google.com/macros/s/AKfycbyUsBFR2Z0Fy1n9GRWTur4ppgtlSMYJh8dS1A017jAdI070A6iJ7syey_HrUUqmOWTxgg/exec";
+
         // ========== AUTHENTICATION & RBAC SYSTEM ==========
 
         // Simple hash function for passwords (NOT cryptographically secure, but fine for demo)
@@ -48,9 +51,10 @@
             }
         }
 
-        // Save users to localStorage
+        // Save users to localStorage and Cloud
         window.saveUsers = () => {
             localStorage.setItem('fruitsDashboardUsers', JSON.stringify(window.usersDB));
+            window.saveToCloud('Users', { users: window.usersDB });
         };
 
         // Login function
@@ -182,6 +186,51 @@
         window.canManageUsers = () => ['admin', 'central'].includes(window.currentUser?.role);
         window.canSeeSettings = () => ['admin', 'central'].includes(window.currentUser?.role);
 
+        // ========== CLOUD SYNC ENGINE ==========
+        window.saveToCloud = async (type, data) => {
+            console.log(`Saving ${type} to cloud...`);
+            try {
+                const response = await fetch(CLOUD_API_URL, {
+                    method: 'POST',
+                    mode: 'no-cors', // Apps Script requires no-cors for simple POST
+                    cache: 'no-cache',
+                    body: JSON.stringify({ sheet: type, ...data })
+                });
+                window.showToast(`${type} Saved to Cloud!`);
+            } catch (e) {
+                console.error(`Error saving ${type}:`, e);
+                window.showToast("Cloud sync failed (check console)");
+            }
+        };
+
+        window.fetchCloudState = async () => {
+            try {
+                const res = await fetch(CLOUD_API_URL);
+                const cloudData = await res.json();
+
+                // Merge cloud data into our local state
+                if (cloudData.users && Object.keys(cloudData.users).length > 0) {
+                    window.usersDB = cloudData.users;
+                    localStorage.setItem('fruitsDashboardUsers', JSON.stringify(window.usersDB));
+                }
+
+                if (cloudData.targets && Object.keys(cloudData.targets).length > 0) {
+                    window.dbState.targets = cloudData.targets;
+                }
+
+                if (cloudData.settings && cloudData.settings.estPricePerBox) {
+                    window.dbState.estPricePerBox = cloudData.settings.estPricePerBox;
+                }
+
+                localStorage.setItem('fruitsDashboardState', JSON.stringify(window.dbState));
+                window.dispatchEvent(new CustomEvent('db-updated'));
+                return true;
+            } catch (e) {
+                console.error("Failed to fetch cloud state:", e);
+                return false;
+            }
+        };
+
         // ========== DASHBOARD STATE ==========
         const defaultState = {
             csvUrl: "https://docs.google.com/spreadsheets/d/e/2PACX-1vS6zQmj2xCO5cOrEowyMgU48OGVl2hakWGmzGwDCBltMGJP9GgRQTiFAmvbkEebpdUg8zFNOMR38dVB/pub?gid=2127058672&single=true&output=csv",
@@ -206,11 +255,17 @@
         window.rawData = [];
         window.monthFilterInitialized = false;
 
-        window.saveToCloud = (newUrl, newTargets, newEstPrice) => {
+        window.saveToCloudLegacy = (newUrl, newTargets, newEstPrice) => {
             try {
                 if (newUrl !== undefined && window.canEditCSV()) window.dbState.csvUrl = newUrl;
-                if (newTargets !== undefined && window.canEditTargets()) window.dbState.targets = newTargets;
-                if (newEstPrice !== undefined) window.dbState.estPricePerBox = newEstPrice;
+                if (newTargets !== undefined && window.canEditTargets()) {
+                    window.dbState.targets = newTargets;
+                    window.saveToCloud('Targets', { targets: newTargets });
+                }
+                if (newEstPrice !== undefined) {
+                    window.dbState.estPricePerBox = newEstPrice;
+                    window.saveToCloud('Settings', { estPricePerBox: newEstPrice });
+                }
                 window.dbState.lastUpdated = new Date().toISOString();
                 localStorage.setItem('fruitsDashboardState', JSON.stringify(window.dbState));
                 window.showToast("Settings Saved!");
@@ -796,7 +851,11 @@
         let dispatchChart = null;
         let allClosedTransactions = []; // Store raw data for dynamic filtering
 
-        window.addEventListener('DOMContentLoaded', () => {
+        window.addEventListener('DOMContentLoaded', async () => {
+            // INITIAL PHASE: Load users from Cloud before anything else
+            updateStatus('Syncing Cloud...', 'bg-blue-400');
+            await window.fetchCloudState();
+
             // ============ AUTHENTICATION CHECK ============
             if (!window.currentUser) {
                 // Show login overlay, hide dashboard
