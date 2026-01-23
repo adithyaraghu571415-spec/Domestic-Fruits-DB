@@ -55,21 +55,35 @@
 
         // Login function
         window.login = (email, password) => {
-            email = email.toLowerCase().trim();
-            // Sanity reload from localStorage before login check
-            const currentUsers = localStorage.getItem('fruitsDashboardUsers');
-            if (currentUsers) window.usersDB = JSON.parse(currentUsers);
+            const trimmedEmail = (email || "").toLowerCase().trim();
+            console.log("Attempting login for:", trimmedEmail);
 
-            const user = window.usersDB[email];
-            if (!user) return { success: false, error: "User not found. Contact admin." };
-            if (user.password !== hashPassword(password)) return { success: false, error: "Incorrect password." };
+            // Force reload from localStorage to ensure we have any newly added users
+            try {
+                const currentUsers = localStorage.getItem('fruitsDashboardUsers');
+                if (currentUsers) {
+                    window.usersDB = JSON.parse(currentUsers);
+                }
+            } catch (e) {
+                console.error("Error loading users from local storage:", e);
+            }
 
-            // Enforce hardcoded CSV URL on local state before any fetch starts
+            const user = window.usersDB[trimmedEmail];
+            if (!user) {
+                console.warn("User not found in DB. Available users:", Object.keys(window.usersDB));
+                return { success: false, error: "User not found. Contact admin." };
+            }
+
+            if (user.password !== hashPassword(password)) {
+                return { success: false, error: "Incorrect password." };
+            }
+
+            // Enforce hardcoded CSV URL
             window.dbState.csvUrl = "https://docs.google.com/spreadsheets/d/e/2PACX-1vS6zQmj2xCO5cOrEowyMgU48OGVl2hakWGmzGwDCBltMGJP9GgRQTiFAmvbkEebpdUg8zFNOMR38dVB/pub?gid=2127058672&single=true&output=csv";
             localStorage.setItem('fruitsDashboardState', JSON.stringify(window.dbState));
 
-            window.currentUser = { email, ...user };
-            localStorage.setItem('fruitsDashboardSession', JSON.stringify({ email }));
+            window.currentUser = { email: trimmedEmail, ...user };
+            localStorage.setItem('fruitsDashboardSession', JSON.stringify({ email: trimmedEmail }));
             return { success: true, mustChangePassword: user.mustChangePassword };
         };
 
