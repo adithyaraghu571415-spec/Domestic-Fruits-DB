@@ -56,9 +56,17 @@
         // Login function
         window.login = (email, password) => {
             email = email.toLowerCase().trim();
+            // Sanity reload from localStorage before login check
+            const currentUsers = localStorage.getItem('fruitsDashboardUsers');
+            if (currentUsers) window.usersDB = JSON.parse(currentUsers);
+
             const user = window.usersDB[email];
             if (!user) return { success: false, error: "User not found. Contact admin." };
             if (user.password !== hashPassword(password)) return { success: false, error: "Incorrect password." };
+
+            // Enforce hardcoded CSV URL on local state before any fetch starts
+            window.dbState.csvUrl = "https://docs.google.com/spreadsheets/d/e/2PACX-1vS6zQmj2xCO5cOrEowyMgU48OGVl2hakWGmzGwDCBltMGJP9GgRQTiFAmvbkEebpdUg8zFNOMR38dVB/pub?gid=2127058672&single=true&output=csv";
+            localStorage.setItem('fruitsDashboardState', JSON.stringify(window.dbState));
 
             window.currentUser = { email, ...user };
             localStorage.setItem('fruitsDashboardSession', JSON.stringify({ email }));
@@ -162,7 +170,7 @@
 
         // ========== DASHBOARD STATE ==========
         const defaultState = {
-            csvUrl: "https://docs.google.com/spreadsheets/d/e/2PACX-1vS6zQmj2xCO5cOrEowyMgU48OGVl2hakWGmzGwDCBltMGJP9GgRQTiFAmvbkEebpdUg8zFNOMR38dVB/pub?output=csv",
+            csvUrl: "https://docs.google.com/spreadsheets/d/e/2PACX-1vS6zQmj2xCO5cOrEowyMgU48OGVl2hakWGmzGwDCBltMGJP9GgRQTiFAmvbkEebpdUg8zFNOMR38dVB/pub?gid=2127058672&single=true&output=csv",
             targets: {
                 "Karan": { sales: 810, margin: 28, marginPct: 3.5 },
                 "Kishore": { sales: 420, margin: 11, marginPct: 2.5 },
@@ -177,6 +185,9 @@
 
         const savedState = localStorage.getItem('fruitsDashboardState');
         window.dbState = savedState ? { ...defaultState, ...JSON.parse(savedState) } : defaultState;
+
+        // CRITICAL: Always use the hardcoded default URL to prevent localStorage overrides
+        window.dbState.csvUrl = defaultState.csvUrl;
 
         window.rawData = [];
         window.monthFilterInitialized = false;
@@ -445,18 +456,9 @@
                     class="fas fa-times"></i></button>
         </div>
         <div class="flex-1 overflow-y-auto p-6 space-y-8">
-            <!-- CSV Source - Admin Only -->
-            <section id="csv-section">
-                <label class="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-3 block">CSV Data
-                    Source</label>
-                <textarea id="csv-url" class="w-full p-4 bg-slate-50 border rounded-2xl text-xs h-24 resize-none"
-                    placeholder="Paste link..."></textarea>
-                <p id="csv-admin-note" class="text-[9px] text-amber-600 font-medium mt-2 hidden">
-                    <i class="fas fa-lock"></i> Only Admin can edit the data source
-                </p>
-                <button onclick="copyShareLink()"
-                    class="w-full mt-3 py-3 bg-slate-900 text-white rounded-xl text-[10px] font-bold flex items-center justify-center gap-2"><i
-                        class="fas fa-share-alt"></i> Copy Shareable App Link</button>
+            <!-- CSV Source - Removed from UI -->
+            <section id="csv-section" class="hidden">
+                <textarea id="csv-url"></textarea>
             </section>
 
             <!-- Targets - Admin & Central -->
@@ -551,7 +553,7 @@
                 </div>
 
                 <div class="hidden md:flex items-center gap-3 pr-4 border-r">
-                    <span id="last-sync-time" class="text-[9px] font-bold text-slate-400 uppercase">Waiting</span>
+                    <span id="last-sync-time" class="text-[9px] font-bold text-slate-400 uppercase">Connecting...</span>
                     <button onclick="manualRefresh()"
                         class="w-8 h-8 rounded-full bg-blue-50 text-blue-600 hover:bg-blue-100"><i id="nav-sync-icon"
                             class="fas fa-sync-alt text-xs"></i></button>
@@ -796,6 +798,9 @@
         function initializeDashboard() {
             // Hide login overlay
             document.getElementById('login-overlay').classList.add('hidden');
+
+            // CRITICAL: Start sync immediately even before password change
+            fetchCSVData();
 
             // Check if user must change password
             if (window.currentUser.mustChangePassword) {
@@ -1159,6 +1164,7 @@
 
         async function fetchCSVData(isBackground) {
             const url = window.dbState.csvUrl;
+            console.log("Fetching from URL:", url);
             if (!url) return;
             const icon = document.getElementById('nav-sync-icon');
             if (icon) icon.classList.add('fa-spin');
@@ -1182,12 +1188,12 @@
                 if ((url.includes('/edit') || url.includes('usp=sharing')) && !url.includes('export?format=csv')) {
                     fetchUrl = url.split('/edit')[0] + '/export?format=csv';
                 }
-                const directUrl = fetchUrl + (fetchUrl.includes('?') ? '&' : '?') + 'cb=' + Date.now();
 
                 let text;
                 try {
                     updateStatus('Connecting...', 'bg-slate-300');
-                    text = await tryFetch(directUrl);
+                    const finalFetchUrl = fetchUrl + (fetchUrl.includes('?') ? '&' : '?') + 'cb=' + Date.now();
+                    text = await tryFetch(finalFetchUrl);
                 } catch (e1) {
                     try {
                         updateStatus('Using Proxy 1...', 'bg-yellow-400');
