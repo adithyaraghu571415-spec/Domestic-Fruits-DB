@@ -810,6 +810,15 @@
                         (Margin)</h3>
                     <div id="top-customers-list" class="space-y-3"></div>
                 </div>
+                <!-- NEW TOP MARKET SECTION -->
+                <div class="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm">
+                    <div class="flex justify-between items-center mb-4">
+                        <h3 class="text-xs font-extrabold text-slate-800 uppercase tracking-widest">Top Market (DT)</h3>
+                        <select id="dt-market-product-filter" onchange="renderTopMarkets()"
+                            class="text-[10px] bg-slate-50 border-slate-200 rounded-lg px-2 py-1 font-bold text-slate-600 outline-none focus:ring-1 focus:ring-blue-500 cursor-pointer"></select>
+                    </div>
+                    <div id="top-market-list" class="space-y-3"></div>
+                </div>
                 <div class="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm">
                     <h3 class="text-xs font-extrabold text-slate-800 uppercase tracking-widest mb-4">Source Market
                         Performance</h3>
@@ -850,6 +859,7 @@
         let sourceChart = null;
         let dispatchChart = null;
         let allClosedTransactions = []; // Store raw data for dynamic filtering
+        window.allDTTransactions = []; // Store data for Top Market section
 
         window.addEventListener('DOMContentLoaded', async () => {
             // INITIAL PHASE: Load users from Cloud before anything else
@@ -1616,6 +1626,7 @@
 
             // Clear previous raw data
             allClosedTransactions = [];
+            window.allDTTransactions = [];
             const uniqueSources = new Set();
 
             rows.forEach(row => {
@@ -1679,7 +1690,28 @@
                 if (!custs[cust]) custs[cust] = { s: 0, m: 0 }; custs[cust].s += s; custs[cust].m += m;
 
                 // Trade Corridor Logic
-                const dest = row[3]?.trim() || "Unknown";
+                const dtMarket = row[3]?.trim() || "Unknown"; // DT Market is Column D (element 3)
+                const dest = row[3]?.trim() || "Unknown"; // Keeping dest same as row[3] for corridor if that was the intent, but strictly following existing code for corridor.
+                // Wait, existing code said: const dest = row[3]?.trim() || "Unknown";
+                // So row[3] IS the Destination/DT Market.
+
+                // Aggregating for DT Market Section (Dynamic Product Filter)
+                const rawMark = row[10]?.trim() || "Unknown";
+                let product = rawMark;
+                if (rawMark.toUpperCase().includes("POMO")) product = "Pomegranate";
+
+                window.allDTTransactions.push({
+                    market: dtMarket,
+                    product: product,
+                    sales: s,
+                    margin: m,
+                    customer: cust,
+                    isClosed: status === 'closed' // Though existing logic seemed to aggregate regardless, usually Closed Sales implies closed. But let's follow user intent. The loop iterates ALL rows.
+                    // The previous aggregation was unconditional on open/closed for sales/margin aggregation in existing code style (tS += s), BUT usually dashboards filter Closed.
+                    // Let's look at `groups` logic. groups[owner].s += s happens unconditionally. 
+                    // However, let's stick to what we had: aggregating `s` and `m` from the row.
+                });
+
                 const route = `${source} → ${dest}`;
                 if (!corridors[route]) corridors[route] = { s: 0, m: 0 };
                 corridors[route].s += s;
@@ -1833,6 +1865,30 @@
             const topC = document.getElementById('top-customers-list'); topC.innerHTML = '';
             Object.entries(custs).sort((a, b) => b[1].m - a[1].m).slice(0, 5).forEach(([n, d], i) => topC.insertAdjacentHTML('beforeend', `<div class="flex justify-between items-center p-2 border-b text-[10px]"><div class="font-bold w-4 text-slate-400">#${i + 1}</div><div class="flex-1 font-bold text-slate-700 truncate mr-2">${n}</div><div class="font-bold text-emerald-600">${compactRupee.format(d.m)}</div></div>`));
 
+            // Populate Product Dropdown & Render Top Markets
+            const productFilter = document.getElementById('dt-market-product-filter');
+            const uniqueProducts = Array.from(new Set(window.allDTTransactions.map(t => t.product))).sort();
+
+            // Save current selection if exists
+            const currentSelection = productFilter.value;
+
+            productFilter.innerHTML = '';
+            uniqueProducts.forEach(p => {
+                const opt = document.createElement('option');
+                opt.value = p;
+                opt.innerText = p;
+                productFilter.appendChild(opt);
+            });
+
+            // Default to Pomegranate if available, else All/First
+            if (uniqueProducts.includes("Pomegranate") && !currentSelection) {
+                productFilter.value = "Pomegranate";
+            } else if (currentSelection && uniqueProducts.includes(currentSelection)) {
+                productFilter.value = currentSelection;
+            }
+
+            renderTopMarkets();
+
             // Side panels - Source Market Performance
             const sourceMList = document.getElementById('source-market-list'); sourceMList.innerHTML = '';
             const marketList = Object.entries(sourceMarkets).map(([n, d]) => ({
@@ -1926,6 +1982,48 @@
                         }
                     }
                 }
+            });
+        }
+
+        function renderTopMarkets() {
+            const productFilter = document.getElementById('dt-market-product-filter');
+            const selectedProduct = productFilter.value;
+            const container = document.getElementById('top-market-list');
+            container.innerHTML = '';
+
+            const marketStats = {};
+
+            window.allDTTransactions.forEach(t => {
+                if (t.product === selectedProduct) {
+                    if (!marketStats[t.market]) marketStats[t.market] = { s: 0, m: 0, customers: new Set() };
+                    marketStats[t.market].s += t.sales;
+                    marketStats[t.market].m += t.margin;
+                    marketStats[t.market].customers.add(t.customer);
+                }
+            });
+
+            const sorted = Object.entries(marketStats)
+                .sort((a, b) => b[1].s - a[1].s)
+                .slice(0, 5);
+
+            if (sorted.length === 0) {
+                container.innerHTML = '<div class="text-center text-[10px] text-slate-400 p-2">No data</div>';
+                return;
+            }
+
+            sorted.forEach(([n, d]) => {
+                container.insertAdjacentHTML('beforeend', `
+                    <div class="p-2 border rounded mb-2 hover:bg-slate-50 transition-colors">
+                        <div class="flex justify-between text-[10px] font-bold">
+                            <span class="text-slate-700 truncate max-w-[150px]">${n}</span>
+                            <span class="text-blue-600">${compactRupee.format(d.s)}</span>
+                        </div>
+                        <div class="text-[9px] text-slate-400 mt-1 flex justify-between">
+                            <span class="font-bold text-emerald-600">Margin: ${compactRupee.format(d.m)}</span>
+                            <span>${d.customers.size} Unique Cust.</span>
+                        </div>
+                    </div>
+                `);
             });
         }
     </script>
