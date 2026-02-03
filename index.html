@@ -218,6 +218,10 @@
                     window.dbState.targets = cloudData.targets;
                 }
 
+                if (cloudData.dtTargets && Object.keys(cloudData.dtTargets).length > 0) {
+                    window.dbState.dtTargets = cloudData.dtTargets;
+                }
+
                 if (cloudData.settings && cloudData.settings.estPricePerBox) {
                     window.dbState.estPricePerBox = cloudData.settings.estPricePerBox;
                 }
@@ -234,14 +238,8 @@
         // ========== DASHBOARD STATE ==========
         const defaultState = {
             csvUrl: "https://docs.google.com/spreadsheets/d/e/2PACX-1vS6zQmj2xCO5cOrEowyMgU48OGVl2hakWGmzGwDCBltMGJP9GgRQTiFAmvbkEebpdUg8zFNOMR38dVB/pub?gid=2127058672&single=true&output=csv",
-            targets: {
-                "Karan": { sales: 810, margin: 28, marginPct: 3.5 },
-                "Kishore": { sales: 420, margin: 11, marginPct: 2.5 },
-                "Amit / Bharath": { sales: 154, margin: 8, marginPct: 5.0 },
-                "Amit": { sales: 100, margin: 2, marginPct: 2.0 },
-                "Kishore (Known Party)": { sales: 210, margin: 2, marginPct: 1.0 },
-                "Central (Known Party)": { sales: 100, margin: 2, marginPct: 1.5 }
-            },
+            targets: {},   // Structure: Month -> Owner -> Data
+            dtTargets: {}, // Structure: Month -> Product -> Market -> Data
             estPricePerBox: 1000,
             lastUpdated: 0
         };
@@ -261,6 +259,10 @@
                 if (newTargets !== undefined && window.canEditTargets()) {
                     window.dbState.targets = newTargets;
                     window.saveToCloud('Targets', { targets: newTargets });
+                }
+                // Legacy wrapper not typically used for new DT targets, but ensuring safety
+                if (window.dbState.dtTargets) {
+                    window.saveToCloud('DT_Targets', { dtTargets: window.dbState.dtTargets });
                 }
                 if (newEstPrice !== undefined) {
                     window.dbState.estPricePerBox = newEstPrice;
@@ -532,9 +534,59 @@
 
             <!-- Targets - Admin & Central -->
             <section id="targets-section">
-                <label class="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-3 block">Owner
-                    Targets</label>
-                <div id="targets-list" class="space-y-4 pb-4"></div>
+                <!-- Supply Targets -->
+                <div class="mb-6">
+                    <label class="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-3 block">Supply
+                        Targets (Ownership)</label>
+                    <div id="targets-message"
+                        class="hidden mb-2 p-2 bg-amber-50 text-amber-600 text-[10px] font-bold rounded border border-amber-200">
+                        Select a specific month on the dashboard to edit targets.</div>
+                    <div id="targets-list" class="space-y-3 pb-4"></div>
+                </div>
+
+
+
+                <!-- Demand Targets -->
+                <div class="border-t pt-6">
+                    <label class="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-3 block">Demand
+                        Targets (Destination)</label>
+
+                    <!-- Add Demand Target Form -->
+                    <div class="bg-slate-50 p-4 rounded-2xl border mb-4 space-y-3">
+                        <div class="grid grid-cols-2 gap-2">
+                            <div>
+                                <label class="text-[8px] font-bold text-slate-400 uppercase block mb-1">Product</label>
+                                <select id="new-dt-product"
+                                    class="w-full px-2 py-1.5 text-xs font-bold border border-slate-200 rounded-lg outline-none bg-white"></select>
+                            </div>
+                            <div>
+                                <label class="text-[8px] font-bold text-slate-400 uppercase block mb-1">Market</label>
+                                <select id="new-dt-market"
+                                    class="w-full px-2 py-1.5 text-xs font-bold border border-slate-200 rounded-lg outline-none bg-white"></select>
+                            </div>
+                        </div>
+                        <div class="grid grid-cols-2 gap-2">
+                            <div>
+                                <label class="text-[8px] font-bold text-slate-400 uppercase block mb-1">Sales
+                                    (L)</label>
+                                <input type="number" id="new-dt-sales" placeholder="0"
+                                    class="w-full px-2 py-1.5 text-xs font-bold border border-slate-200 rounded-lg outline-none">
+                            </div>
+                            <div>
+                                <label class="text-[8px] font-bold text-slate-400 uppercase block mb-1">Margin
+                                    (L)</label>
+                                <input type="number" id="new-dt-margin" placeholder="0"
+                                    class="w-full px-2 py-1.5 text-xs font-bold border border-slate-200 rounded-lg outline-none">
+                            </div>
+                        </div>
+                        <button onclick="addDemandTarget()"
+                            class="w-full py-2 bg-indigo-500 text-white rounded-xl text-xs font-bold hover:bg-indigo-600">Set
+                            Demand Target</button>
+                    </div>
+
+                    <!-- Demand Targets List -->
+                    <div id="demand-targets-list" class="space-y-2 max-h-[300px] overflow-y-auto custom-scroll"></div>
+                </div>
             </section>
 
             <!-- User Management - Admin & Central -->
@@ -753,6 +805,35 @@
                         </table>
                     </div>
                 </div>
+
+                <!-- Demand Matrix (New) -->
+                <!-- Demand Matrix (New) -->
+                <div class="mt-6">
+                    <div class="flex justify-between items-center mb-4">
+                        <h3 class="text-xs font-extrabold text-slate-800 uppercase tracking-widest">Demand Matrix
+                            (Destination)</h3>
+                        <select id="demand-matrix-product-filter" onchange="filterAndRender()"
+                            class="text-[10px] bg-slate-50 border-slate-200 rounded-lg px-2 py-1 font-bold text-slate-600 outline-none focus:ring-1 focus:ring-blue-500 cursor-pointer"></select>
+                    </div>
+                    <div class="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden">
+                        <div class="overflow-x-auto custom-scroll">
+                            <table class="w-full text-left border-collapse min-w-[600px]">
+                                <thead>
+                                    <tr
+                                        class="bg-slate-50/80 border-b border-slate-100 text-[10px] font-bold text-slate-400 uppercase tracking-widest">
+                                        <th class="px-6 py-4">Market</th>
+                                        <th class="px-6 py-4 text-right">Vol (Box)</th>
+                                        <th class="px-6 py-4 text-right">Sales / Target</th>
+                                        <th class="px-6 py-4 text-right">Margin / Target</th>
+                                        <th class="px-6 py-4 text-right">Margin %</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="demand-matrix-body" class="divide-y divide-slate-50"></tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
                 <!-- NEW DISPATCH VOLUME CHART (Karan & Kishore) -->
                 <div class="bg-white border border-slate-200 rounded-2xl p-6 shadow-sm">
                     <h3 class="text-xs font-extrabold text-slate-800 uppercase tracking-widest mb-4">Last 7 Days
@@ -1119,37 +1200,193 @@
         }
 
         // ... existing auth functions ...
-        function renderTargetSettings() {
+        // ... existing auth functions ...
+
+        // Helper to get all available months (from Data + stored Targets + Next Month)
+        function getAllTargetMonths() {
+            const months = new Set();
+            // 1. From Data
+            if (window.rawData) {
+                window.rawData.forEach(r => { if (r[1]) months.add(r[1].trim()); });
+            }
+            // 2. From Targets
+            if (window.dbState.targets) Object.keys(window.dbState.targets).forEach(m => months.add(m));
+            if (window.dbState.dtTargets) Object.keys(window.dbState.dtTargets).forEach(m => months.add(m));
+
+            // To support "Next Month" before data exists, we can technically add it manually via prompt,
+            // but let's at least ensure the "latest" month from value is there.
+
+            return Array.from(months).sort((a, b) => parseMonth(b) - parseMonth(a)); // Descending
+        }
+
+        function promptNewMonth() {
+            const m = prompt("Enter new Month (e.g., 'Feb 2026'):");
+            if (m) {
+                // Determine if valid format? For now just trust user or basic check
+                if (!m.includes(' ')) { alert("Format: 'Month Year' (e.g., Jan 2026)"); return; }
+                // Add a dummy entry to force it into existence? 
+                // We'll just select it in the dropdown if we re-render, but it needs to exist in "months" set logic.
+                // We can temporarily force it by adding empty target object
+                if (!window.dbState.targets[m]) window.dbState.targets[m] = {};
+                renderTargetSettings(m);
+            }
+        }
+
+        // PERMISSION FIX: Allow Admin AND Central to edit targets
+        window.canEditTargets = function () {
+            return window.currentUser && (window.currentUser.role === 'admin' || window.currentUser.role === 'central');
+        };
+
+        function renderTargetSettings(forceSelectMonth) {
             const container = document.getElementById('targets-list');
-            const targets = window.dbState.targets;
+            const demandList = document.getElementById('demand-targets-list');
+            const msg = document.getElementById('targets-message');
+
+            // Get selected month from MAIN dashboard filter
+            const monthSelect = document.getElementById('month-filter');
+            const selectedMonth = monthSelect ? monthSelect.value : 'All Months';
+
+            if (selectedMonth === 'All Months') {
+                if (msg) msg.classList.remove('hidden');
+                container.innerHTML = '';
+                demandList.innerHTML = '';
+                return;
+            } else {
+                if (msg) msg.classList.add('hidden');
+            }
+
             const canEdit = window.canEditTargets();
+
+            // --- SUPPLY TARGETS ---
+            if (!window.dbState.targets[selectedMonth]) window.dbState.targets[selectedMonth] = {};
+            const monthTargets = window.dbState.targets[selectedMonth];
 
             container.innerHTML = OWNER_ORDER.map(owner => {
                 const label = owner.includes('Known Party') ? `<span>${owner.split(' (')[0]}</span> <span class="text-[8px] text-blue-500 font-bold uppercase ml-1">Known Party</span>` : owner;
-                const t = targets[owner] || { sales: 0, margin: 0, marginPct: 0 };
+                const t = monthTargets[owner] || { sales: 0, margin: 0, marginPct: 0 };
                 const disabled = canEdit ? '' : 'disabled';
                 const disabledClass = canEdit ? '' : 'opacity-60 cursor-not-allowed';
                 return `
-                    <div class="p-4 bg-slate-50 rounded-2xl border border-slate-100 space-y-3">
-                        <div class="text-[11px] font-extrabold text-slate-800 border-b border-slate-200 pb-2">${label}</div>
+                    <div class="p-3 bg-slate-50 rounded-xl border border-slate-100 space-y-2">
+                        <div class="text-[10px] font-extrabold text-slate-800 border-b border-slate-200 pb-1">${label}</div>
                         <div class="grid grid-cols-3 gap-2">
-                            <div><label class="text-[8px] font-bold text-slate-400 uppercase block mb-1">Sales (L)</label><input type="number" step="0.1" value="${t.sales}" class="w-full px-2 py-1.5 text-xs font-bold border border-slate-200 rounded-lg outline-none ${disabledClass}" ${disabled} onchange="updateLocalTarget('${owner}', 'sales', this.value)"></div>
-                            <div><label class="text-[8px] font-bold text-slate-400 uppercase block mb-1">Margin (L)</label><input type="number" step="0.1" value="${t.margin}" class="w-full px-2 py-1.5 text-xs font-bold border border-slate-200 rounded-lg outline-none ${disabledClass}" ${disabled} onchange="updateLocalTarget('${owner}', 'margin', this.value)"></div>
-                            <div><label class="text-[8px] font-bold text-slate-400 uppercase block mb-1">Yield %</label><input type="number" step="0.1" value="${t.marginPct}" class="w-full px-2 py-1.5 text-xs font-bold border border-slate-200 rounded-lg outline-none ${disabledClass}" ${disabled} onchange="updateLocalTarget('${owner}', 'marginPct', this.value)"></div>
+                            <div><label class="text-[8px] font-bold text-slate-400 uppercase block mb-1">Sales (L)</label><input type="number" step="0.1" value="${t.sales}" class="w-full px-2 py-1 text-[10px] font-bold border border-slate-200 rounded outline-none ${disabledClass}" ${disabled} onchange="updateLocalTarget('${selectedMonth}', '${owner}', 'sales', this.value)"></div>
+                            <div><label class="text-[8px] font-bold text-slate-400 uppercase block mb-1">Margin (L)</label><input type="number" step="0.1" value="${t.margin}" class="w-full px-2 py-1 text-[10px] font-bold border border-slate-200 rounded outline-none ${disabledClass}" ${disabled} onchange="updateLocalTarget('${selectedMonth}', '${owner}', 'margin', this.value)"></div>
+                            <div><label class="text-[8px] font-bold text-slate-400 uppercase block mb-1">Yield %</label><input type="number" step="0.1" value="${t.marginPct}" class="w-full px-2 py-1 text-[10px] font-bold border border-slate-200 rounded outline-none ${disabledClass}" ${disabled} onchange="updateLocalTarget('${selectedMonth}', '${owner}', 'marginPct', this.value)"></div>
                         </div>
                     </div>`;
             }).join('');
+
+            // --- DEMAND TARGETS PREP ---
+            const uniqProds = new Set();
+            const uniqMarkets = new Set();
+            if (window.rawData) {
+                window.rawData.forEach(r => {
+                    let prod = r[10]?.trim();
+                    if (prod) {
+                        if (prod.toUpperCase().includes("POMO")) prod = "Pomegranate";
+                        uniqProds.add(prod);
+                    }
+                    if (r[3]) uniqMarkets.add(r[3].trim());
+                });
+            }
+            if (!uniqProds.has("Pomegranate")) uniqProds.add("Pomegranate");
+
+            // Render Dropdowns
+            const pSelect = document.getElementById('new-dt-product');
+            const mSelect = document.getElementById('new-dt-market');
+            pSelect.innerHTML = '';
+            ["All Products", ...Array.from(uniqProds).sort()].forEach(p => { if (p !== "All Products") pSelect.add(new Option(p, p)); });
+
+            mSelect.innerHTML = '';
+            Array.from(uniqMarkets).sort().forEach(m => mSelect.add(new Option(m, m)));
+
+            // --- DEMAND TARGETS LIST ---
+            if (!window.dbState.dtTargets) window.dbState.dtTargets = {};
+            if (!window.dbState.dtTargets[selectedMonth]) window.dbState.dtTargets[selectedMonth] = {};
+            const dtMonth = window.dbState.dtTargets[selectedMonth];
+
+            let dtHtml = '';
+            Object.entries(dtMonth).forEach(([prod, markets]) => {
+                Object.entries(markets).forEach(([mkt, data]) => {
+                    dtHtml += `
+                        <div class="flex items-center justify-between p-2 bg-white rounded border border-slate-200">
+                             <div>
+                                <div class="text-[10px] font-bold text-slate-800">${prod} <span class="text-slate-400">→</span> ${mkt}</div>
+                                <div class="text-[9px] text-slate-500">Sales: ${data.sales}L • Margin: ${data.margin}L</div>
+                             </div>
+                             ${canEdit ? `<button onclick="deleteDemandTarget('${selectedMonth}', '${prod}', '${mkt}')" class="text-red-400 hover:text-red-600"><i class="fas fa-trash text-xs"></i></button>` : ''}
+                        </div>
+                    `;
+                });
+            });
+            demandList.innerHTML = dtHtml || '<div class="text-[10px] text-slate-400 text-center italic">No demand targets for this month</div>';
         }
 
-        function updateLocalTarget(owner, key, val) { if (!window.dbState.targets[owner]) window.dbState.targets[owner] = {}; window.dbState.targets[owner][key] = parseFloat(val) || 0; }
-        async function updateGlobalPrice(val) { window.dbState.estPricePerBox = parseFloat(val) || 0; filterAndRender(); if (window.saveToCloud) window.saveToCloud(window.dbState.csvUrl, window.dbState.targets, window.dbState.estPricePerBox); }
-        async function saveAndRefresh() {
-            const url = document.getElementById('csv-url').value.trim();
-            if (window.canEditCSV()) window.dbState.csvUrl = url;
-            if (window.saveToCloud) window.saveToCloud(url, window.dbState.targets, window.dbState.estPricePerBox);
-            toggleConfig(); fetchCSVData();
+        function updateLocalTarget(month, owner, key, val) {
+            if (!window.dbState.targets[month]) window.dbState.targets[month] = {};
+            if (!window.dbState.targets[month][owner]) window.dbState.targets[month][owner] = {};
+            window.dbState.targets[month][owner][key] = parseFloat(val) || 0;
+            // Auto save? Maybe wait for manual save. Existing code waited for "Save", but also had updateLocalTarget.
         }
-        function toggleConfig() { document.getElementById('config-sidebar').classList.toggle('translate-x-full'); renderUsersList(); }
+
+        function addDemandTarget() {
+            const month = document.getElementById('month-filter').value; if (month === 'All Months') { window.showToast('Select month'); return; }
+            const prod = document.getElementById('new-dt-product').value;
+            const mkt = document.getElementById('new-dt-market').value;
+            const s = parseFloat(document.getElementById('new-dt-sales').value) || 0;
+            const m = parseFloat(document.getElementById('new-dt-margin').value) || 0;
+
+            if (!month || !prod || !mkt) return window.showToast("Please fill all fields");
+
+            if (!window.dbState.dtTargets) window.dbState.dtTargets = {};
+            if (!window.dbState.dtTargets[month]) window.dbState.dtTargets[month] = {};
+            if (!window.dbState.dtTargets[month][prod]) window.dbState.dtTargets[month][prod] = {};
+
+            window.dbState.dtTargets[month][prod][mkt] = { sales: s, margin: m };
+
+            // Clear inputs
+            document.getElementById('new-dt-sales').value = '';
+            document.getElementById('new-dt-margin').value = '';
+
+            renderTargetSettings();
+            window.showToast("Target Added (Click Save to Sync)");
+        }
+
+        function deleteDemandTarget(month, prod, mkt) {
+            if (confirm(`Delete target for ${prod} -> ${mkt}?`)) {
+                delete window.dbState.dtTargets[month][prod][mkt];
+                // Clean up empty objects
+                if (Object.keys(window.dbState.dtTargets[month][prod]).length === 0) delete window.dbState.dtTargets[month][prod];
+                renderTargetSettings();
+            }
+        }
+
+        async function updateGlobalPrice(val) {
+            window.dbState.estPricePerBox = parseFloat(val) || 0;
+            filterAndRender();
+            if (window.saveToCloud) window.saveToCloud('Settings', { estPricePerBox: window.dbState.estPricePerBox });
+        }
+
+        async function saveAndRefresh() {
+            const url = document.getElementById('csv-url') ? document.getElementById('csv-url').value.trim() : window.dbState.csvUrl;
+            if (window.canEditCSV()) window.dbState.csvUrl = url;
+
+            if (window.saveToCloud) {
+                window.saveToCloud('Targets', { targets: window.dbState.targets });
+                window.saveToCloud('DT_Targets', { dtTargets: window.dbState.dtTargets });
+                if (window.dbState.estPricePerBox) window.saveToCloud('Settings', { estPricePerBox: window.dbState.estPricePerBox });
+            }
+            toggleConfig();
+            fetchCSVData(true);
+        }
+        function toggleConfig() {
+            document.getElementById('config-sidebar').classList.toggle('translate-x-full');
+            if (!document.getElementById('config-sidebar').classList.contains('translate-x-full')) {
+                renderUsersList();
+                renderTargetSettings();
+            }
+        }
         window.showToast = (msg) => { const t = document.getElementById('toast'); t.innerText = msg; t.classList.add('show'); setTimeout(() => t.classList.remove('show'), 3000); };
         function copyShareLink() {
             if (window.location.protocol === 'file:' || window.location.protocol === 'blob:') return window.showToast("Host file to share link.");
@@ -1334,8 +1571,23 @@
         }
 
         function parseMonth(mStr) {
-            const d = new Date("1 " + mStr);
-            return isNaN(d) ? 0 : d.getTime();
+            let d = new Date("1 " + mStr);
+            if (isNaN(d.getTime())) return 0;
+
+            // If string doesn't have a year (4 digits), apply heuristic
+            if (!/\d{4}/.test(mStr)) {
+                const now = new Date();
+                const currentMonth = now.getMonth();
+                const parsedMonth = d.getMonth();
+                const currentYear = now.getFullYear();
+
+                d.setFullYear(currentYear);
+                // If the month is seemingly in the future (e.g. Dec while we are in Feb), assume it's last year
+                if (parsedMonth > currentMonth) {
+                    d.setFullYear(currentYear - 1);
+                }
+            }
+            return d.getTime();
         }
 
         function populateMonthFilter(rows) {
@@ -1621,6 +1873,8 @@
         function renderDashboard(rows) {
             let tS = 0, tM = 0, tP = 0, tVol = 0, tOpenBox = 0, tClosedS = 0;
             const groups = {}, custs = {}, sourceMarkets = {}, corridors = {};
+            const demandMatrix = {}; // Product -> Market -> {s, m, vol}
+            const dateFilter = document.getElementById('month-filter').value;
             const dailySales = {}; // Date -> Sales
             const clean = v => parseFloat(v?.replace(/[^\d.-]/g, '')) || 0;
 
@@ -1699,6 +1953,13 @@
                 const rawMark = row[10]?.trim() || "Unknown";
                 let product = rawMark;
                 if (rawMark.toUpperCase().includes("POMO")) product = "Pomegranate";
+
+                // Demand Matrix Aggregation
+                if (!demandMatrix[product]) demandMatrix[product] = {};
+                if (!demandMatrix[product][dtMarket]) demandMatrix[product][dtMarket] = { s: 0, m: 0, vol: 0 };
+                demandMatrix[product][dtMarket].s += s;
+                demandMatrix[product][dtMarket].m += m;
+                demandMatrix[product][dtMarket].vol += b;
 
                 window.allDTTransactions.push({
                     market: dtMarket,
@@ -1803,7 +2064,7 @@
             document.getElementById('kpi-volume').innerText = tVol.toLocaleString();
             document.getElementById('kpi-customers').innerText = Object.keys(custs).length;
 
-            // Matrix
+            // Matrix Rendering (Ownership)
             const tbody = document.getElementById('mark-breakdown-body');
             tbody.innerHTML = '';
 
@@ -1812,19 +2073,35 @@
                 return (iA === -1 ? 99 : iA) - (iB === -1 ? 99 : iB);
             });
 
+            // Helper to get Owner Target (Month-aware)
+            const getOwnerTarget = (owner) => {
+                const db = window.dbState.targets;
+                if (!db) return { sales: 0, margin: 0, marginPct: 0 };
+
+                if (dateFilter !== 'All Months') {
+                    return (db[dateFilter] && db[dateFilter][owner]) ? db[dateFilter][owner] : { sales: 0, margin: 0, marginPct: 0 };
+                } else {
+                    let s = 0, m = 0;
+                    Object.values(db).forEach(monthData => {
+                        if (monthData[owner]) {
+                            s += monthData[owner].sales || 0;
+                            m += monthData[owner].margin || 0;
+                        }
+                    });
+                    return { sales: s, margin: m, marginPct: 0 };
+                }
+            };
+
             sortedOwners.forEach(owner => {
                 const d = groups[owner];
-                // Smart Filter: Skip empty owner groups (0 sales, 0 margin, 0 boxes)
                 if (d.s === 0 && d.m === 0 && d.closedBox === 0 && d.openBox === 0) return;
 
-                const t = window.dbState.targets[owner] || { sales: 0, margin: 0, marginPct: 0 };
+                const t = getOwnerTarget(owner);
                 const eff = d.s ? (d.m / d.s * 100) : 0;
-
                 const sPct = (t.sales * 100000) ? Math.min((d.s / (t.sales * 100000) * 100), 100) : 0;
                 const mPct = (t.margin * 100000) ? Math.min((d.m / (t.margin * 100000) * 100), 100) : 0;
 
                 const nameDisplay = owner.includes('Known') ? `<span>${owner.split(' (')[0]}</span><br><span class="text-[8px] text-blue-500 font-bold uppercase">Known Party</span>` : owner;
-
                 const rowClass = "hover:bg-slate-50/50 transition-colors border-b border-slate-100 last:border-0 clickable-row";
 
                 tbody.insertAdjacentHTML('beforeend', `
@@ -1855,11 +2132,90 @@
                         </td>
                         <td class="px-6 py-5 text-right align-top">
                             <span class="text-sm font-black text-slate-700">${eff.toFixed(2)}%</span>
-                            <div class="text-[8px] text-slate-400 font-bold uppercase">Target: ${t.marginPct}%</div>
+                            <div class="text-[8px] text-slate-400 font-bold uppercase">Target: ${t.marginPct || 0}%</div>
                         </td>
                     </tr>
                 `);
             });
+
+            // Demand Matrix Rendering
+            const dmBody = document.getElementById('demand-matrix-body');
+            dmBody.innerHTML = '';
+
+            // Populate Product Filter
+            const dmFilter = document.getElementById('demand-matrix-product-filter');
+            const availableProducts = Object.keys(demandMatrix).sort();
+
+            // Retain selection or Default to Pomegranate
+            let dmSelected = dmFilter.value;
+            dmFilter.innerHTML = '';
+            availableProducts.forEach(p => dmFilter.add(new Option(p, p)));
+
+            if (!availableProducts.includes(dmSelected)) {
+                if (availableProducts.includes("Pomegranate")) dmSelected = "Pomegranate";
+                else dmSelected = availableProducts[0];
+            }
+            if (dmSelected) dmFilter.value = dmSelected;
+
+            const getDemandTarget = (prod, mkt) => {
+                const db = window.dbState.dtTargets;
+                if (!db) return { sales: 0, margin: 0 };
+
+                if (dateFilter !== 'All Months') {
+                    return (db[dateFilter] && db[dateFilter][prod] && db[dateFilter][prod][mkt]) ? db[dateFilter][prod][mkt] : { sales: 0, margin: 0 };
+                } else {
+                    let s = 0, m = 0;
+                    Object.values(db).forEach(monthData => {
+                        if (monthData[prod] && monthData[prod][mkt]) {
+                            s += monthData[prod][mkt].sales || 0;
+                            m += monthData[prod][mkt].margin || 0;
+                        }
+                    });
+                    return { sales: s, margin: m };
+                }
+            };
+
+            const demandRows = [];
+            if (dmSelected && demandMatrix[dmSelected]) {
+                Object.entries(demandMatrix[dmSelected]).forEach(([mkt, data]) => {
+                    demandRows.push({ prod: dmSelected, mkt, ...data });
+                });
+            }
+
+            demandRows.sort((a, b) => b.s - a.s);
+
+            if (demandRows.length === 0) {
+                dmBody.innerHTML = '<tr><td colspan="4" class="p-4 text-center text-slate-400 italic">No Data for selected product</td></tr>';
+            } else {
+                demandRows.forEach(r => {
+                    const t = getDemandTarget(r.prod, r.mkt);
+                    const sGoal = t.sales * 100000;
+                    const mGoal = t.margin * 100000;
+                    const sPct = sGoal > 0 ? (r.s / sGoal) * 100 : 0;
+                    const mPct = mGoal > 0 ? (r.m / mGoal) * 100 : 0;
+
+                    dmBody.insertAdjacentHTML('beforeend', `
+                        <tr class="hover:bg-slate-50 transition-colors border-b border-slate-50 last:border-0">
+                             <td class="px-6 py-4 text-slate-600 text-xs">${r.mkt}</td>
+                             <td class="px-6 py-4 text-right font-bold text-slate-700 text-xs">${r.vol}</td>
+                             <td class="px-6 py-4 text-right">
+                                  <div class="text-[10px] font-bold text-slate-800">${compactRupee.format(r.s)} <span class="text-slate-300">/</span> <span class="text-slate-400">${compactRupee.format(sGoal)}</span></div>
+                                  <div class="w-full bg-slate-100 rounded-full h-1 mt-1"><div class="bg-blue-500 h-1 rounded-full" style="width: ${Math.min(sPct, 100)}%"></div></div>
+                             </td>
+                             <td class="px-6 py-4 text-right">
+                                  <div class="text-[10px] font-bold text-slate-800">${compactRupee.format(r.m)} <span class="text-slate-300">/</span> <span class="text-slate-400">${compactRupee.format(mGoal)}</span></div>
+                                  <div class="w-full bg-slate-100 rounded-full h-1 mt-1"><div class="bg-emerald-500 h-1 rounded-full" style="width: ${Math.min(mPct, 100)}%"></div></div>
+                             </td>
+                             <td class="px-6 py-4 text-right">
+                                  <!-- Margin % Calculation: Margin / Sales * 100 -->
+                                  <!-- If Sales is 0, Yield is 0 -->
+                                  <span class="text-[10px] font-bold text-slate-700">${(r.s > 0 ? (r.m / r.s * 100) : 0).toFixed(1)}%</span>
+                             </td>
+                        </tr>
+                    `);
+                });
+            }
+
 
             // Side panels - Top Customers
             const topC = document.getElementById('top-customers-list'); topC.innerHTML = '';
@@ -1887,7 +2243,21 @@
                 productFilter.value = currentSelection;
             }
 
+
+            // Add event listener to close sidebar when clicking outside
+            document.addEventListener('click', function (event) {
+                const sidebar = document.getElementById('config-sidebar');
+                const settingsBtn = document.getElementById('settings-btn');
+                // Check if sidebar is open (not translating out) and click is NOT inside sidebar AND NOT on the button
+                if (!sidebar.classList.contains('translate-x-full') &&
+                    !sidebar.contains(event.target) &&
+                    !settingsBtn.contains(event.target)) {
+                    toggleConfig();
+                }
+            });
+
             renderTopMarkets();
+
 
             // Side panels - Source Market Performance
             const sourceMList = document.getElementById('source-market-list'); sourceMList.innerHTML = '';
