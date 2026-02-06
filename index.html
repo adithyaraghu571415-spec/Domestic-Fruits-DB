@@ -205,7 +205,8 @@
 
         window.fetchCloudState = async () => {
             try {
-                const res = await fetch(CLOUD_API_URL);
+                // Add timestamp to bypass caching
+                const res = await fetch(`${CLOUD_API_URL}?t=${Date.now()}`, { cache: "no-store" });
                 const cloudData = await res.json();
 
                 // Merge cloud data into our local state
@@ -493,22 +494,27 @@
                 </button>
             </div>
             <div class="flex-1 overflow-auto custom-scroll p-6">
-                <table class="w-full text-left border-collapse text-xs">
-                    <thead>
-                        <tr class="bg-slate-50 text-slate-400 uppercase tracking-widest font-bold border-b">
-                            <th class="p-3">Closure Date</th>
-                            <th class="p-3">Dispatch Date</th>
-                            <th class="p-3">Customer</th>
-                            <th class="p-3">Mark</th>
-                            <th class="p-3 text-right">Boxes</th>
-                            <th class="p-3 text-right">Sales</th>
-                            <th class="p-3 text-right">Margin</th>
-                        </tr>
-                    </thead>
-                    <tbody id="modal-body" class="divide-y divide-slate-100 text-slate-700 font-medium">
-                        <!-- Populated via JS -->
-                    </tbody>
-                </table>
+                <!-- Wrapper for Trade Transactions List -->
+                <div id="modal-table-container">
+                    <table class="w-full text-left border-collapse text-xs">
+                        <thead>
+                            <tr class="bg-slate-50 text-slate-400 uppercase tracking-widest font-bold border-b">
+                                <th class="p-3">Closure Date</th>
+                                <th class="p-3">Dispatch Date</th>
+                                <th class="p-3">Customer</th>
+                                <th class="p-3">Mark</th>
+                                <th class="p-3 text-right">Boxes</th>
+                                <th class="p-3 text-right">Sales</th>
+                                <th class="p-3 text-right">Margin</th>
+                            </tr>
+                        </thead>
+                        <tbody id="modal-body" class="divide-y divide-slate-100 text-slate-700 font-medium">
+                            <!-- Populated via JS -->
+                        </tbody>
+                    </table>
+                </div>
+                <!-- Wrapper for Customer Summary (Drill Down) -->
+                <div id="modal-summary-container" class="hidden"></div>
             </div>
             <div class="p-4 bg-slate-50 border-t border-slate-100 text-right">
                 <button onclick="closeModal()"
@@ -533,61 +539,7 @@
             </section>
 
             <!-- Targets - Admin & Central -->
-            <section id="targets-section">
-                <!-- Supply Targets -->
-                <div class="mb-6">
-                    <label class="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-3 block">Supply
-                        Targets (Ownership)</label>
-                    <div id="targets-message"
-                        class="hidden mb-2 p-2 bg-amber-50 text-amber-600 text-[10px] font-bold rounded border border-amber-200">
-                        Select a specific month on the dashboard to edit targets.</div>
-                    <div id="targets-list" class="space-y-3 pb-4"></div>
-                </div>
 
-
-
-                <!-- Demand Targets -->
-                <div class="border-t pt-6">
-                    <label class="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-3 block">Demand
-                        Targets (Destination)</label>
-
-                    <!-- Add Demand Target Form -->
-                    <div class="bg-slate-50 p-4 rounded-2xl border mb-4 space-y-3">
-                        <div class="grid grid-cols-2 gap-2">
-                            <div>
-                                <label class="text-[8px] font-bold text-slate-400 uppercase block mb-1">Product</label>
-                                <select id="new-dt-product"
-                                    class="w-full px-2 py-1.5 text-xs font-bold border border-slate-200 rounded-lg outline-none bg-white"></select>
-                            </div>
-                            <div>
-                                <label class="text-[8px] font-bold text-slate-400 uppercase block mb-1">Market</label>
-                                <select id="new-dt-market"
-                                    class="w-full px-2 py-1.5 text-xs font-bold border border-slate-200 rounded-lg outline-none bg-white"></select>
-                            </div>
-                        </div>
-                        <div class="grid grid-cols-2 gap-2">
-                            <div>
-                                <label class="text-[8px] font-bold text-slate-400 uppercase block mb-1">Sales
-                                    (L)</label>
-                                <input type="number" id="new-dt-sales" placeholder="0"
-                                    class="w-full px-2 py-1.5 text-xs font-bold border border-slate-200 rounded-lg outline-none">
-                            </div>
-                            <div>
-                                <label class="text-[8px] font-bold text-slate-400 uppercase block mb-1">Margin
-                                    (L)</label>
-                                <input type="number" id="new-dt-margin" placeholder="0"
-                                    class="w-full px-2 py-1.5 text-xs font-bold border border-slate-200 rounded-lg outline-none">
-                            </div>
-                        </div>
-                        <button onclick="addDemandTarget()"
-                            class="w-full py-2 bg-indigo-500 text-white rounded-xl text-xs font-bold hover:bg-indigo-600">Set
-                            Demand Target</button>
-                    </div>
-
-                    <!-- Demand Targets List -->
-                    <div id="demand-targets-list" class="space-y-2 max-h-[300px] overflow-y-auto custom-scroll"></div>
-                </div>
-            </section>
 
             <!-- User Management - Admin & Central -->
             <section id="users-section" class="border-t pt-6">
@@ -793,12 +745,28 @@
                         <table class="w-full text-left border-collapse min-w-[600px]">
                             <thead>
                                 <tr
-                                    class="bg-slate-50/80 border-b border-slate-100 text-[10px] font-bold text-slate-400 uppercase tracking-widest">
-                                    <th class="px-6 py-4">Owner</th>
-                                    <th class="px-6 py-4">Volume (Boxes)</th>
-                                    <th class="px-6 py-4">Sales vs Goal</th>
-                                    <th class="px-6 py-4">Margin vs Goal</th>
-                                    <th class="px-6 py-4 text-right">Yield</th>
+                                    class="bg-gradient-to-r from-slate-800 to-slate-700 text-white text-[10px] font-bold uppercase tracking-widest">
+                                    <th class="px-6 py-4 align-top">
+                                        <div class="text-[10px] font-bold uppercase tracking-widest text-white">Owner
+                                        </div>
+                                    </th>
+                                    <th class="px-6 py-4 text-center align-top">
+                                        <div class="text-[10px] font-bold uppercase tracking-widest text-slate-300">
+                                            Volume (Boxes)
+                                        </div>
+                                    </th>
+                                    <th class="px-6 py-4 text-right align-top">
+                                        <div class="text-[10px] font-bold uppercase tracking-widest text-slate-300">
+                                            Sales vs Goal</div>
+                                    </th>
+                                    <th class="px-6 py-4 text-right align-top">
+                                        <div class="text-[10px] font-bold uppercase tracking-widest text-slate-300">
+                                            Margin vs Goal</div>
+                                    </th>
+                                    <th class="px-6 py-4 text-right align-top">
+                                        <div class="text-[10px] font-bold uppercase tracking-widest text-slate-300">
+                                            Yield</div>
+                                    </th>
                                 </tr>
                             </thead>
                             <tbody id="mark-breakdown-body" class="divide-y divide-slate-50"></tbody>
@@ -810,22 +778,49 @@
                 <!-- Demand Matrix (New) -->
                 <div class="mt-6">
                     <div class="flex justify-between items-center mb-4">
-                        <h3 class="text-xs font-extrabold text-slate-800 uppercase tracking-widest">Demand Matrix
-                            (Destination)</h3>
+                        <div class="flex flex-col sm:flex-row sm:items-baseline gap-2 sm:gap-4">
+                            <h3 id="demand-matrix-title"
+                                class="text-xs font-extrabold text-slate-800 uppercase tracking-widest whitespace-nowrap">
+                                Demand Matrix</h3>
+                            <div id="demand-header-stats" class="flex items-center gap-2"></div>
+                        </div>
                         <select id="demand-matrix-product-filter" onchange="filterAndRender()"
-                            class="text-[10px] bg-slate-50 border-slate-200 rounded-lg px-2 py-1 font-bold text-slate-600 outline-none focus:ring-1 focus:ring-blue-500 cursor-pointer"></select>
+                            class="text-[10px] bg-slate-50 border-slate-200 rounded-lg px-2 py-1 font-bold text-slate-600 outline-none focus:ring-1 focus:ring-blue-500 cursor-pointer min-w-[120px]"></select>
                     </div>
                     <div class="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden">
                         <div class="overflow-x-auto custom-scroll">
                             <table class="w-full text-left border-collapse min-w-[600px]">
                                 <thead>
                                     <tr
-                                        class="bg-slate-50/80 border-b border-slate-100 text-[10px] font-bold text-slate-400 uppercase tracking-widest">
-                                        <th class="px-6 py-4">Market</th>
-                                        <th class="px-6 py-4 text-right">Vol (Box)</th>
-                                        <th class="px-6 py-4 text-right">Sales / Target</th>
-                                        <th class="px-6 py-4 text-right">Margin / Target</th>
-                                        <th class="px-6 py-4 text-right">Margin %</th>
+                                        class="bg-gradient-to-r from-slate-800 to-slate-700 text-white text-[10px] font-bold uppercase tracking-widest">
+                                        <th class="px-6 py-4 align-top">
+                                            <div class="text-[10px] font-bold uppercase tracking-widest text-white">
+                                                Market</div>
+                                        </th>
+                                        <th class="px-6 py-4 text-right align-top">
+                                            <div
+                                                class="text-[10px] font-bold uppercase tracking-widest text-slate-300 mb-1">
+                                                Volume (Boxes)</div>
+                                            <div id="dm-header-vol" class="text-xs font-bold text-white">-</div>
+                                        </th>
+                                        <th class="px-6 py-4 text-right align-top">
+                                            <div
+                                                class="text-[10px] font-bold uppercase tracking-widest text-slate-300 mb-1">
+                                                Sales vs Goal</div>
+                                            <div id="dm-header-sales" class="text-xs font-bold text-white">-</div>
+                                        </th>
+                                        <th class="px-6 py-4 text-right align-top">
+                                            <div
+                                                class="text-[10px] font-bold uppercase tracking-widest text-slate-300 mb-1">
+                                                Margin vs Goal</div>
+                                            <div id="dm-header-margin" class="text-xs font-bold text-white">-</div>
+                                        </th>
+                                        <th class="px-6 py-4 text-right align-top">
+                                            <div
+                                                class="text-[10px] font-bold uppercase tracking-widest text-slate-300 mb-1">
+                                                Yield</div>
+                                            <div id="dm-header-yield" class="text-xs font-bold text-white">-</div>
+                                        </th>
                                     </tr>
                                 </thead>
                                 <tbody id="demand-matrix-body" class="divide-y divide-slate-50"></tbody>
@@ -853,17 +848,13 @@
                     </div>
                 </div>
 
-                <div class="bg-white border border-slate-200 rounded-2xl p-6 shadow-sm mt-6">
-                    <h3 class="text-xs font-extrabold text-slate-800 uppercase tracking-widest mb-4">Cumulative Sales
-                        Growth (Closed GMV)</h3>
-                    <div class="chart-container"><canvas id="trendChart"></canvas></div>
-                </div>
+
 
                 <!-- NEW SOURCE MARKET CHART -->
                 <div class="bg-white border border-slate-200 rounded-2xl p-6 shadow-sm mt-6">
                     <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-4">
-                        <h3 class="text-xs font-extrabold text-slate-800 uppercase tracking-widest">Source Market Growth
-                        </h3>
+                        <h3 class="text-xs font-extrabold text-slate-800 uppercase tracking-widest">Cumulative Sales
+                            Growth (Closed GMV)</h3>
 
                         <!-- Checkbox Dropdown -->
                         <div class="flex items-center gap-2 relative">
@@ -1109,6 +1100,14 @@
             }
         }
 
+        function closeModal() {
+            document.getElementById('drilldown-modal').classList.add('hidden');
+            const tc = document.getElementById('modal-table-container');
+            const sc = document.getElementById('modal-summary-container');
+            if (tc) tc.classList.remove('hidden');
+            if (sc) sc.classList.add('hidden');
+        }
+
         // ============ USER MANAGEMENT HANDLERS ============
         function renderUsersList() {
             const container = document.getElementById('users-list');
@@ -1237,130 +1236,133 @@
             return window.currentUser && (window.currentUser.role === 'admin' || window.currentUser.role === 'central');
         };
 
-        function renderTargetSettings(forceSelectMonth) {
-            const container = document.getElementById('targets-list');
-            const demandList = document.getElementById('demand-targets-list');
-            const msg = document.getElementById('targets-message');
 
-            // Get selected month from MAIN dashboard filter
-            const monthSelect = document.getElementById('month-filter');
-            const selectedMonth = monthSelect ? monthSelect.value : 'All Months';
 
-            if (selectedMonth === 'All Months') {
-                if (msg) msg.classList.remove('hidden');
-                container.innerHTML = '';
-                demandList.innerHTML = '';
-                return;
-            } else {
-                if (msg) msg.classList.add('hidden');
+        function showDemandDrillDown(prod, mktKey) {
+            const modal = document.getElementById('drilldown-modal');
+            const title = document.getElementById('modal-title');
+            const summaryContainer = document.getElementById('modal-summary-container');
+            const tableContainer = document.getElementById('modal-table-container');
+
+            const isCustTarget = mktKey.includes('::');
+            const [mkt, cust] = isCustTarget ? mktKey.split('::') : [mktKey, null];
+
+            title.innerHTML = `${prod} <span class="text-slate-300">/</span> ${mkt} ${cust ? `<span class="text-slate-300">/</span> ${cust}` : ''} <span class="text-slate-400 text-[10px] ml-2 font-normal">Customer Breakdown (Closed Only)</span>`;
+
+            // Toggle Views
+            tableContainer.classList.add('hidden');
+            summaryContainer.classList.remove('hidden');
+            summaryContainer.innerHTML = ''; // Clear previous
+
+            // Filter Transactions
+            // Use window.allDTTransactions which already has fields: market, product, sales, margin, customer, isClosed
+            // Filter: Product, Market, Closed=True
+            let txs = window.allDTTransactions.filter(t => t.product === prod && t.market === mkt && t.isClosed);
+            if (cust) {
+                txs = txs.filter(t => t.customer === cust);
             }
 
-            const canEdit = window.canEditTargets();
+            // Aggregate by Customer
+            const custStats = {};
+            let tS = 0, tM = 0;
 
-            // --- SUPPLY TARGETS ---
-            if (!window.dbState.targets[selectedMonth]) window.dbState.targets[selectedMonth] = {};
-            const monthTargets = window.dbState.targets[selectedMonth];
-
-            container.innerHTML = OWNER_ORDER.map(owner => {
-                const label = owner.includes('Known Party') ? `<span>${owner.split(' (')[0]}</span> <span class="text-[8px] text-blue-500 font-bold uppercase ml-1">Known Party</span>` : owner;
-                const t = monthTargets[owner] || { sales: 0, margin: 0, marginPct: 0 };
-                const disabled = canEdit ? '' : 'disabled';
-                const disabledClass = canEdit ? '' : 'opacity-60 cursor-not-allowed';
-                return `
-                    <div class="p-3 bg-slate-50 rounded-xl border border-slate-100 space-y-2">
-                        <div class="text-[10px] font-extrabold text-slate-800 border-b border-slate-200 pb-1">${label}</div>
-                        <div class="grid grid-cols-3 gap-2">
-                            <div><label class="text-[8px] font-bold text-slate-400 uppercase block mb-1">Sales (L)</label><input type="number" step="0.1" value="${t.sales}" class="w-full px-2 py-1 text-[10px] font-bold border border-slate-200 rounded outline-none ${disabledClass}" ${disabled} onchange="updateLocalTarget('${selectedMonth}', '${owner}', 'sales', this.value)"></div>
-                            <div><label class="text-[8px] font-bold text-slate-400 uppercase block mb-1">Margin (L)</label><input type="number" step="0.1" value="${t.margin}" class="w-full px-2 py-1 text-[10px] font-bold border border-slate-200 rounded outline-none ${disabledClass}" ${disabled} onchange="updateLocalTarget('${selectedMonth}', '${owner}', 'margin', this.value)"></div>
-                            <div><label class="text-[8px] font-bold text-slate-400 uppercase block mb-1">Yield %</label><input type="number" step="0.1" value="${t.marginPct}" class="w-full px-2 py-1 text-[10px] font-bold border border-slate-200 rounded outline-none ${disabledClass}" ${disabled} onchange="updateLocalTarget('${selectedMonth}', '${owner}', 'marginPct', this.value)"></div>
-                        </div>
-                    </div>`;
-            }).join('');
-
-            // --- DEMAND TARGETS PREP ---
-            const uniqProds = new Set();
-            const uniqMarkets = new Set();
-            if (window.rawData) {
-                window.rawData.forEach(r => {
-                    let prod = r[10]?.trim();
-                    if (prod) {
-                        if (prod.toUpperCase().includes("POMO")) prod = "Pomegranate";
-                        uniqProds.add(prod);
-                    }
-                    if (r[3]) uniqMarkets.add(r[3].trim());
-                });
-            }
-            if (!uniqProds.has("Pomegranate")) uniqProds.add("Pomegranate");
-
-            // Render Dropdowns
-            const pSelect = document.getElementById('new-dt-product');
-            const mSelect = document.getElementById('new-dt-market');
-            pSelect.innerHTML = '';
-            ["All Products", ...Array.from(uniqProds).sort()].forEach(p => { if (p !== "All Products") pSelect.add(new Option(p, p)); });
-
-            mSelect.innerHTML = '';
-            Array.from(uniqMarkets).sort().forEach(m => mSelect.add(new Option(m, m)));
-
-            // --- DEMAND TARGETS LIST ---
-            if (!window.dbState.dtTargets) window.dbState.dtTargets = {};
-            if (!window.dbState.dtTargets[selectedMonth]) window.dbState.dtTargets[selectedMonth] = {};
-            const dtMonth = window.dbState.dtTargets[selectedMonth];
-
-            let dtHtml = '';
-            Object.entries(dtMonth).forEach(([prod, markets]) => {
-                Object.entries(markets).forEach(([mkt, data]) => {
-                    dtHtml += `
-                        <div class="flex items-center justify-between p-2 bg-white rounded border border-slate-200">
-                             <div>
-                                <div class="text-[10px] font-bold text-slate-800">${prod} <span class="text-slate-400">→</span> ${mkt}</div>
-                                <div class="text-[9px] text-slate-500">Sales: ${data.sales}L • Margin: ${data.margin}L</div>
-                             </div>
-                             ${canEdit ? `<button onclick="deleteDemandTarget('${selectedMonth}', '${prod}', '${mkt}')" class="text-red-400 hover:text-red-600"><i class="fas fa-trash text-xs"></i></button>` : ''}
-                        </div>
-                    `;
-                });
+            txs.forEach(t => {
+                if (!custStats[t.customer]) custStats[t.customer] = { s: 0, m: 0 };
+                custStats[t.customer].s += t.sales;
+                custStats[t.customer].m += t.margin;
+                tS += t.sales;
+                tM += t.margin;
             });
-            demandList.innerHTML = dtHtml || '<div class="text-[10px] text-slate-400 text-center italic">No demand targets for this month</div>';
+
+            // Get Targets (Market & Customer)
+            const month = document.getElementById('month-filter').value;
+            const db = window.dbState.dtTargets;
+
+            // Render Table
+            summaryContainer.innerHTML = `
+                <table class="w-full text-left">
+                    <thead class="bg-slate-50 text-[10px] font-bold text-slate-500 uppercase">
+                        <tr>
+                            <th class="p-3">Customer</th>
+                            <th class="p-3 text-right">Sales</th>
+                            <th class="p-3 text-right">Margin</th>
+                            <th class="p-3 text-right">Yield</th>
+                            <th class="p-3 text-right">Target Status</th>
+                        </tr>
+                    </thead>
+                    <tbody class="divide-y divide-slate-100 text-xs text-slate-700">
+                        ${Object.entries(custStats).sort((a, b) => b[1].s - a[1].s).map(([c, d]) => {
+                const yieldPct = d.s ? (d.m / d.s * 100) : 0;
+
+                // Customer Target
+                let cTarget = null;
+                if (db && db[month] && db[month][prod]) {
+                    cTarget = db[month][prod][`${mkt}::${c}`];
+                }
+
+                let targetHtml = '<span class="text-slate-300">-</span>';
+                if (cTarget) {
+                    const goal = cTarget.sales * 100000;
+                    const pct = goal ? Math.min((d.s / goal) * 100, 100) : 0;
+                    targetHtml = `
+                                    <div class="w-24 ml-auto">
+                                        <div class="flex justify-between text-[9px] mb-0.5"><span class="font-bold">${compactRupee.format(d.s)}</span><span class="text-slate-400">/${compactRupee.format(goal)}</span></div>
+                                        <div class="h-1 bg-slate-100 rounded-full"><div class="h-full bg-blue-500 rounded-full" style="width:${pct}%"></div></div>
+                                    </div>
+                                `;
+                }
+
+                return `
+                                <tr class="hover:bg-slate-50">
+                                    <td class="p-3 font-bold">${c}</td>
+                                    <td class="p-3 text-right font-bold">${compactRupee.format(d.s)}</td>
+                                    <td class="p-3 text-right font-bold text-emerald-600">${compactRupee.format(d.m)}</td>
+                                    <td class="p-3 text-right">${yieldPct.toFixed(1)}%</td>
+                                    <td class="p-3 text-right">${targetHtml}</td>
+                                </tr>
+                            `;
+            }).join('')}
+                    </tbody>
+                    <tfoot class="bg-slate-50 font-bold text-xs">
+                         <tr>
+                            <td class="p-3">TOTAL</td>
+                            <td class="p-3 text-right">${compactRupee.format(tS)}</td>
+                            <td class="p-3 text-right text-emerald-600">${compactRupee.format(tM)}</td>
+                            <td class="p-3 text-right">${tS ? (tM / tS * 100).toFixed(1) : 0}%</td>
+                            <td class="p-3"></td>
+                         </tr>
+                    </tfoot>
+                </table>
+            `;
+
+            modal.classList.remove('hidden');
         }
 
-        function updateLocalTarget(month, owner, key, val) {
-            if (!window.dbState.targets[month]) window.dbState.targets[month] = {};
-            if (!window.dbState.targets[month][owner]) window.dbState.targets[month][owner] = {};
-            window.dbState.targets[month][owner][key] = parseFloat(val) || 0;
-            // Auto save? Maybe wait for manual save. Existing code waited for "Save", but also had updateLocalTarget.
-        }
 
-        function addDemandTarget() {
-            const month = document.getElementById('month-filter').value; if (month === 'All Months') { window.showToast('Select month'); return; }
-            const prod = document.getElementById('new-dt-product').value;
-            const mkt = document.getElementById('new-dt-market').value;
-            const s = parseFloat(document.getElementById('new-dt-sales').value) || 0;
-            const m = parseFloat(document.getElementById('new-dt-margin').value) || 0;
 
-            if (!month || !prod || !mkt) return window.showToast("Please fill all fields");
 
-            if (!window.dbState.dtTargets) window.dbState.dtTargets = {};
-            if (!window.dbState.dtTargets[month]) window.dbState.dtTargets[month] = {};
-            if (!window.dbState.dtTargets[month][prod]) window.dbState.dtTargets[month][prod] = {};
 
-            window.dbState.dtTargets[month][prod][mkt] = { sales: s, margin: m };
-
-            // Clear inputs
-            document.getElementById('new-dt-sales').value = '';
-            document.getElementById('new-dt-margin').value = '';
-
-            renderTargetSettings();
-            window.showToast("Target Added (Click Save to Sync)");
-        }
-
-        function deleteDemandTarget(month, prod, mkt) {
-            if (confirm(`Delete target for ${prod} -> ${mkt}?`)) {
-                delete window.dbState.dtTargets[month][prod][mkt];
-                // Clean up empty objects
-                if (Object.keys(window.dbState.dtTargets[month][prod]).length === 0) delete window.dbState.dtTargets[month][prod];
-                renderTargetSettings();
+        // Add Listener for Customer Input to disable Margin
+        document.addEventListener('DOMContentLoaded', () => {
+            const custInput = document.getElementById('new-dt-customer');
+            const marginInput = document.getElementById('new-dt-margin');
+            if (custInput && marginInput) {
+                custInput.addEventListener('input', function () {
+                    if (this.value.trim().length > 0) {
+                        marginInput.value = '';
+                        marginInput.disabled = true;
+                        marginInput.placeholder = "N/A for Customer";
+                        marginInput.classList.add('bg-slate-100');
+                    } else {
+                        marginInput.disabled = false;
+                        marginInput.placeholder = "0";
+                        marginInput.classList.remove('bg-slate-100');
+                    }
+                });
             }
-        }
+        });
+
+
 
         async function updateGlobalPrice(val) {
             window.dbState.estPricePerBox = parseFloat(val) || 0;
@@ -1373,8 +1375,9 @@
             if (window.canEditCSV()) window.dbState.csvUrl = url;
 
             if (window.saveToCloud) {
-                window.saveToCloud('Targets', { targets: window.dbState.targets });
-                window.saveToCloud('DT_Targets', { dtTargets: window.dbState.dtTargets });
+                // Targets are now Read-Only (Managed via Sheet) -> DO NOT SAVE BACK
+                // window.saveToCloud('Targets', { targets: window.dbState.targets });
+                // window.saveToCloud('DT_Targets', { dtTargets: window.dbState.dtTargets });
                 if (window.dbState.estPricePerBox) window.saveToCloud('Settings', { estPricePerBox: window.dbState.estPricePerBox });
             }
             toggleConfig();
@@ -1384,7 +1387,7 @@
             document.getElementById('config-sidebar').classList.toggle('translate-x-full');
             if (!document.getElementById('config-sidebar').classList.contains('translate-x-full')) {
                 renderUsersList();
-                renderTargetSettings();
+                // renderTargetSettings(); // Removed (UI gone)
             }
         }
         window.showToast = (msg) => { const t = document.getElementById('toast'); t.innerText = msg; t.classList.add('show'); setTimeout(() => t.classList.remove('show'), 3000); };
@@ -1402,6 +1405,9 @@
             const body = document.getElementById('modal-body');
 
             title.innerText = owner + " - Trade Breakdown";
+
+            document.getElementById('modal-table-container').classList.remove('hidden');
+            document.getElementById('modal-summary-container').classList.add('hidden');
 
             // Filter raw data (No Date Filter - All data passes)
             // Use current global filter
@@ -1887,14 +1893,23 @@
                 const status = row[5]?.trim().toLowerCase() || "";
                 const s = clean(row[8]), m = clean(row[9]), p = clean(row[7]), b = clean(row[6]);
                 const owner = getOwner(row);
+                const mode = row[4]?.trim().toLowerCase() || ""; // Column E is Mode (Index 4)
 
-                // ALWAYS add to global totals
+                // ALWAYS add to global totals (Sales/Margin might be filtered in specific views, but raw totals useful)
+                // Actually, let's keep tS/tM as ALL for now if used elsewhere, BUT user asked for "Closed Only" in matrices.
+                // The top cards use tClosedS (MTD Sales) which is correct.
                 tS += s; tM += m; tP += p; tVol += b;
 
                 // Matrix Grouping: SKIP if EXCLUDED
                 if (owner !== "EXCLUDED") {
                     if (!groups[owner]) groups[owner] = { s: 0, m: 0, openBox: 0, closedBox: 0, closedS: 0 };
-                    groups[owner].s += s; groups[owner].m += m;
+
+                    // Sales/Margin: ONLY CLOSED TRADES (User Request)
+                    if (status === 'closed') {
+                        groups[owner].s += s;
+                        groups[owner].m += m;
+                    }
+                    // Box counts track both
                 }
 
                 const source = row[11]?.trim() || "Unknown";
@@ -1939,27 +1954,47 @@
                     }
                 }
 
-                // Customers
+                // Customers (Closed Only for Consistency?)
                 const cust = row[2]?.trim() || "Unknown";
-                if (!custs[cust]) custs[cust] = { s: 0, m: 0 }; custs[cust].s += s; custs[cust].m += m;
+                if (status === 'closed') {
+                    if (!custs[cust]) custs[cust] = { s: 0, m: 0 }; custs[cust].s += s; custs[cust].m += m;
+                }
 
-                // Trade Corridor Logic
-                const dtMarket = row[3]?.trim() || "Unknown"; // DT Market is Column D (element 3)
-                const dest = row[3]?.trim() || "Unknown"; // Keeping dest same as row[3] for corridor if that was the intent, but strictly following existing code for corridor.
-                // Wait, existing code said: const dest = row[3]?.trim() || "Unknown";
-                // So row[3] IS the Destination/DT Market.
+                // Trade Corridor Logic (Closed Only for Consistency?)
+                // User said "It should be same logic for both...". Let's apply Closed Only generally for Matrix/Analysis views.
+                let dtMarket = row[3]?.trim() || "Unknown";
+                const dest = row[3]?.trim() || "Unknown";
 
                 // Aggregating for DT Market Section (Dynamic Product Filter)
                 const rawMark = row[10]?.trim() || "Unknown";
                 let product = rawMark;
                 if (rawMark.toUpperCase().includes("POMO")) product = "Pomegranate";
 
+                // Known Party Logic
+                const isKnown = mode.includes("known"); // Check for "known" in Mode (e.g. "Known Party", "Known Pair")
+                if (isKnown) {
+                    if (product === "Pomegranate" || product === "POMO" || product.toUpperCase().includes("POMO")) {
+                        // User Request: Move Pomo KP to Pomogranate view, but show as "Pomo KP" row
+                        product = "Pomegranate";
+                        dtMarket = "Pomo KP"; // Override Market Name
+                    } else {
+                        product = "KP Trades"; // "Other KP" goes here
+                    }
+                }
+
                 // Demand Matrix Aggregation
                 if (!demandMatrix[product]) demandMatrix[product] = {};
                 if (!demandMatrix[product][dtMarket]) demandMatrix[product][dtMarket] = { s: 0, m: 0, vol: 0 };
-                demandMatrix[product][dtMarket].s += s;
-                demandMatrix[product][dtMarket].m += m;
-                demandMatrix[product][dtMarket].vol += b;
+
+                // Demand Matrix: ONLY CLOSED TRADES
+                if (status === 'closed') {
+                    demandMatrix[product][dtMarket].s += s;
+                    demandMatrix[product][dtMarket].m += m;
+                    demandMatrix[product][dtMarket].vol += b;
+                }
+                // demandMatrix[product][dtMarket].vol += b; // Volume might include open? "Vol (Box)" usually strictly dispatched?
+                // User said "For sale and margin... show only closed". Implies Vol can be total? 
+                // In Ownership Matrix, "Vol" column shows closed and open. Let's keep Vol as Total. -> UPDATED: User requested Closed Only.
 
                 window.allDTTransactions.push({
                     market: dtMarket,
@@ -1967,16 +2002,20 @@
                     sales: s,
                     margin: m,
                     customer: cust,
-                    isClosed: status === 'closed' // Though existing logic seemed to aggregate regardless, usually Closed Sales implies closed. But let's follow user intent. The loop iterates ALL rows.
-                    // The previous aggregation was unconditional on open/closed for sales/margin aggregation in existing code style (tS += s), BUT usually dashboards filter Closed.
-                    // Let's look at `groups` logic. groups[owner].s += s happens unconditionally. 
-                    // However, let's stick to what we had: aggregating `s` and `m` from the row.
+                    isClosed: status === 'closed'
                 });
 
                 const route = `${source} → ${dest}`;
-                if (!corridors[route]) corridors[route] = { s: 0, m: 0 };
-                corridors[route].s += s;
-                corridors[route].m += m;
+                if (status === 'closed') {
+                    // Exclude KP from Corridors if Pomo KP? User didn't specify, but usually KP is separate logic.
+                    // If we renamed market to "Pomo KP", the `dest` variable is still original "Unknown" or market name from col D.
+                    // Let's use the modified `dtMarket` for consistency if it's Pomo KP?
+                    // But `dtMarket` is local scope to previous block. 
+                    // Let's just execute standard logic.
+                    if (!corridors[route]) corridors[route] = { s: 0, m: 0 };
+                    corridors[route].s += s;
+                    corridors[route].m += m;
+                }
             });
 
             // Populate Checkbox Dropdown
@@ -2092,6 +2131,22 @@
                 }
             };
 
+            // Calculate Totals for Ownership Header
+            let totalOwnerSalesTarget = 0, totalOwnerMarginTarget = 0;
+            let totalOwnerClosedBox = 0;
+
+            sortedOwners.forEach(owner => {
+                const t = getOwnerTarget(owner);
+                totalOwnerSalesTarget += (t.sales || 0) * 100000;
+                totalOwnerMarginTarget += (t.margin || 0) * 100000;
+
+                if (groups[owner]) {
+                    totalOwnerClosedBox += groups[owner].closedBox;
+                }
+            });
+
+
+
             sortedOwners.forEach(owner => {
                 const d = groups[owner];
                 if (d.s === 0 && d.m === 0 && d.closedBox === 0 && d.openBox === 0) return;
@@ -2109,7 +2164,7 @@
                         <td class="px-6 py-5 align-top"><span class="text-sm font-extrabold text-slate-800">${nameDisplay}</span></td>
                         <td class="px-6 py-5 align-top text-center">
                             <div class="inline-flex flex-col items-center">
-                                <span class="bg-slate-800 text-white text-xs font-bold px-2 py-1 rounded-full mb-1">${d.closedBox.toLocaleString()}</span>
+                                <span class="text-sm font-extrabold text-slate-700 mb-1">${d.closedBox.toLocaleString()}</span>
                                 <div class="flex flex-col text-[9px] font-medium text-slate-400 leading-tight">
                                     <span>Open: <span class="text-slate-500">${d.openBox.toLocaleString()}</span></span>
                                     <span>Total: <span class="text-slate-500">${(d.closedBox + d.openBox).toLocaleString()}</span></span>
@@ -2134,14 +2189,10 @@
                             <span class="text-sm font-black text-slate-700">${eff.toFixed(2)}%</span>
                             <div class="text-[8px] text-slate-400 font-bold uppercase">Target: ${t.marginPct || 0}%</div>
                         </td>
-                    </tr>
                 `);
             });
 
             // Demand Matrix Rendering
-            const dmBody = document.getElementById('demand-matrix-body');
-            dmBody.innerHTML = '';
-
             // Populate Product Filter
             const dmFilter = document.getElementById('demand-matrix-product-filter');
             const availableProducts = Object.keys(demandMatrix).sort();
@@ -2175,43 +2226,107 @@
                 }
             };
 
-            const demandRows = [];
-            if (dmSelected && demandMatrix[dmSelected]) {
-                Object.entries(demandMatrix[dmSelected]).forEach(([mkt, data]) => {
-                    demandRows.push({ prod: dmSelected, mkt, ...data });
-                });
+            // --- RENDER DEMAND MATRIX ---
+            const dmContainer = document.getElementById('demand-matrix-container'); // The Title ID
+            const dmBody = document.getElementById('demand-matrix-body');
+            dmBody.innerHTML = '';
+
+            const selectedProd = document.getElementById('demand-matrix-product-filter').value; // Use the actual filter ID
+            let demandRows = [];
+
+            // Filter by Selected Product (and aggregate header stats)
+            let headerSales = 0, headerMargin = 0, headerVol = 0;
+
+            Object.entries(demandMatrix).forEach(([prod, markets]) => {
+                if (selectedProd === 'All Products' || prod === selectedProd) { // Assuming 'All Products' is an option
+                    Object.entries(markets).forEach(([mkt, data]) => {
+                        demandRows.push({ prod, mkt, s: data.s, m: data.m, vol: data.vol });
+                        headerSales += data.s;
+                        headerMargin += data.m;
+                        headerVol += data.vol;
+                    });
+                }
+            });
+
+            // Update Header with Totals
+            const dmTitle = document.getElementById('demand-matrix-title');
+            if (dmTitle) {
+                // Keep title clean
+                dmTitle.innerText = `Demand Matrix (${selectedProd})`;
             }
 
-            demandRows.sort((a, b) => b.s - a.s);
+            // Sort Rows: Sales Descending, but "Pomo KP" at bottom for Pomegranate
+            demandRows.sort((a, b) => {
+                if (a.mkt === "Pomo KP" && b.mkt !== "Pomo KP") return 1; // Pomo KP last
+                if (a.mkt !== "Pomo KP" && b.mkt === "Pomo KP") return -1;
+                return b.s - a.s;
+            });
 
             if (demandRows.length === 0) {
-                dmBody.innerHTML = '<tr><td colspan="4" class="p-4 text-center text-slate-400 italic">No Data for selected product</td></tr>';
+                dmBody.innerHTML = '<tr><td colspan="5" class="px-6 py-8 text-center text-slate-400 text-xs italic">No data available</td></tr>';
             } else {
+                // Update Header Totals (Inside Column Headers)
+                let headerSalesTarget = 0, headerMarginTarget = 0;
+                demandRows.forEach(r => {
+                    const t = getDemandTarget(r.prod, r.mkt);
+                    headerSalesTarget += (t.sales || 0) * 100000;
+                    headerMarginTarget += (t.margin || 0) * 100000;
+                });
+
+                const totalYield = headerSales ? (headerMargin / headerSales * 100) : 0;
+
+                // Update DOM elements in header
+                const hVol = document.getElementById('dm-header-vol');
+                const hSales = document.getElementById('dm-header-sales');
+                const hMargin = document.getElementById('dm-header-margin');
+                const hYield = document.getElementById('dm-header-yield');
+
+                if (hVol) hVol.innerText = headerVol.toLocaleString();
+                if (hSales) hSales.innerHTML = `<span class="text-white">${compactRupee.format(headerSales)}</span> <span class="text-slate-400">/</span> <span class="text-slate-400 font-normal">${compactRupee.format(headerSalesTarget)}</span>`;
+                if (hMargin) hMargin.innerHTML = `<span class="text-emerald-300">${compactRupee.format(headerMargin)}</span> <span class="text-slate-400">/</span> <span class="text-slate-400 font-normal">${compactRupee.format(headerMarginTarget)}</span>`;
+                if (hYield) hYield.innerText = totalYield.toFixed(2) + '%';
+
                 demandRows.forEach(r => {
                     const t = getDemandTarget(r.prod, r.mkt);
                     const sGoal = t.sales * 100000;
                     const mGoal = t.margin * 100000;
+
+                    const eff = r.s ? (r.m / r.s * 100) : 0;
                     const sPct = sGoal > 0 ? (r.s / sGoal) * 100 : 0;
                     const mPct = mGoal > 0 ? (r.m / mGoal) * 100 : 0;
 
+                    const rowClass = "hover:bg-slate-50/50 transition-colors border-b border-slate-100 last:border-0 cursor-pointer";
+
                     dmBody.insertAdjacentHTML('beforeend', `
-                        <tr class="hover:bg-slate-50 transition-colors border-b border-slate-50 last:border-0">
-                             <td class="px-6 py-4 text-slate-600 text-xs">${r.mkt}</td>
-                             <td class="px-6 py-4 text-right font-bold text-slate-700 text-xs">${r.vol}</td>
-                             <td class="px-6 py-4 text-right">
-                                  <div class="text-[10px] font-bold text-slate-800">${compactRupee.format(r.s)} <span class="text-slate-300">/</span> <span class="text-slate-400">${compactRupee.format(sGoal)}</span></div>
-                                  <div class="w-full bg-slate-100 rounded-full h-1 mt-1"><div class="bg-blue-500 h-1 rounded-full" style="width: ${Math.min(sPct, 100)}%"></div></div>
+                        <tr class="${rowClass}" onclick="showDemandDrillDown('${r.prod}', '${r.mkt}')">
+                             <td class="px-6 py-5 align-top"><span class="text-sm font-extrabold text-slate-800">${r.mkt}</span></td>
+                             <td class="px-6 py-5 align-top text-center">
+                                 <span class="text-sm font-extrabold text-slate-700">${r.vol.toLocaleString()}</span>
                              </td>
-                             <td class="px-6 py-4 text-right">
-                                  <div class="text-[10px] font-bold text-slate-800">${compactRupee.format(r.m)} <span class="text-slate-300">/</span> <span class="text-slate-400">${compactRupee.format(mGoal)}</span></div>
-                                  <div class="w-full bg-slate-100 rounded-full h-1 mt-1"><div class="bg-emerald-500 h-1 rounded-full" style="width: ${Math.min(mPct, 100)}%"></div></div>
+                             <td class="px-6 py-5 align-top">
+                                 <div class="w-full max-w-[160px]">
+                                     <div class="flex justify-between items-baseline mb-1">
+                                         <span class="text-[10px] font-bold text-slate-700">${compactRupee.format(r.s)}</span>
+                                         <span class="text-[10px] font-bold ${sPct >= 100 ? 'text-emerald-500' : 'text-blue-500'}">${Math.round(sPct)}%</span>
+                                     </div>
+                                     <div class="w-full bg-slate-100 rounded-full h-1.5 mb-1"><div class="bg-blue-500 h-1.5 rounded-full" style="width: ${Math.min(sPct, 100)}%"></div></div>
+                                     <div class="text-[9px] font-medium text-slate-400">Goal: <span class="text-slate-600">${compactRupee.format(t.sales)}</span></div>
+                                 </div>
                              </td>
-                             <td class="px-6 py-4 text-right">
-                                  <!-- Margin % Calculation: Margin / Sales * 100 -->
-                                  <!-- If Sales is 0, Yield is 0 -->
-                                  <span class="text-[10px] font-bold text-slate-700">${(r.s > 0 ? (r.m / r.s * 100) : 0).toFixed(1)}%</span>
+                             <td class="px-6 py-5 align-top">
+                                 <div class="w-full max-w-[160px]">
+                                     <div class="flex justify-between items-baseline mb-1">
+                                         <span class="text-[10px] font-bold text-slate-700">${compactRupee.format(r.m)}</span>
+                                         <span class="text-[10px] font-bold ${mPct >= 100 ? 'text-emerald-500' : 'text-emerald-600'}">${Math.round(mPct)}%</span>
+                                     </div>
+                                     <div class="w-full bg-slate-100 rounded-full h-1.5 mb-1"><div class="bg-emerald-500 h-1.5 rounded-full" style="width: ${Math.min(mPct, 100)}%"></div></div>
+                                     <div class="text-[9px] font-medium text-slate-400">Goal: <span class="text-slate-600">${compactRupee.format(t.margin)}</span></div>
+                                 </div>
                              </td>
-                        </tr>
+                             <td class="px-6 py-5 text-right font-bold align-top text-[10px] ${eff >= 0 ? 'text-slate-700' : 'text-red-500'}">
+                                 ${eff.toFixed(2)}%
+                             </td>
+                        </tr >
                     `);
                 });
             }
@@ -2269,7 +2384,7 @@
 
             marketList.forEach(m => {
                 sourceMList.insertAdjacentHTML('beforeend', `
-                    <div class="p-2 border rounded mb-2 bg-slate-50">
+                        <div class="p-2 border rounded mb-2 bg-slate-50">
                         <div class="flex justify-between items-center mb-1">
                             <span class="text-[10px] font-black text-slate-800">${m.name}</span>
                             <span class="text-xs font-bold text-blue-600">₹${m.rate.toFixed(1)}<span class="text-[9px] text-slate-400 font-normal">/kg</span></span>
@@ -2279,21 +2394,21 @@
                             <span class="text-[8px] text-slate-400 font-bold">${m.vol} Boxes</span>
                         </div>
                     </div>
-                `);
+                        `);
             });
 
             // Side panels - Trade Corridor (Restored)
             const corrList = document.getElementById('corridor-list'); corrList.innerHTML = '';
             Object.entries(corridors).sort((a, b) => b[1].m - a[1].m).slice(0, 5).forEach(([n, d]) => {
                 corrList.insertAdjacentHTML('beforeend', `
-                    <div class="p-2 border rounded mb-2 hover:bg-slate-50 transition-colors">
+                        <div class="p-2 border rounded mb-2 hover:bg-slate-50 transition-colors">
                         <div class="flex justify-between text-[10px] font-bold"><span class="text-slate-700 truncate max-w-[150px]">${n}</span><span class="text-blue-600">${compactRupee.format(d.m)}</span></div>
                         <div class="text-[9px] text-slate-400 mt-1 flex justify-between">
                             <span>Yield: ${(d.m / d.s * 100).toFixed(1)}%</span>
                             <span>Sales: ${compactRupee.format(d.s)}</span>
                         </div>
                     </div>
-                `);
+                        `);
             });
 
             // CHART: Water Flow (Cumulative GMV Daily)
@@ -2333,7 +2448,7 @@
                         legend: { display: false },
                         tooltip: {
                             callbacks: {
-                                label: (ctx) => ` ₹${compactRupee.format(ctx.raw)}`
+                                label: (ctx) => ` ₹${compactRupee.format(ctx.raw)} `
                             }
                         }
                     },
@@ -2383,7 +2498,7 @@
 
             sorted.forEach(([n, d]) => {
                 container.insertAdjacentHTML('beforeend', `
-                    <div class="p-2 border rounded mb-2 hover:bg-slate-50 transition-colors">
+                        <div class="p-2 border rounded mb-2 hover:bg-slate-50 transition-colors">
                         <div class="flex justify-between text-[10px] font-bold">
                             <span class="text-slate-700 truncate max-w-[150px]">${n}</span>
                             <span class="text-blue-600">${compactRupee.format(d.s)}</span>
