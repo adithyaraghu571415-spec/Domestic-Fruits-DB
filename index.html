@@ -989,13 +989,13 @@
             }
 
             // Render settings
-            renderTargetSettings();
+
             renderUsersList();
             document.getElementById('csv-url').value = window.dbState.csvUrl;
             fetchCSVData(true);
 
+
             window.addEventListener('db-updated', () => {
-                renderTargetSettings();
                 renderUsersList();
                 fetchCSVData(true);
             });
@@ -2237,15 +2237,35 @@
             // Filter by Selected Product (and aggregate header stats)
             let headerSales = 0, headerMargin = 0, headerVol = 0;
 
-            Object.entries(demandMatrix).forEach(([prod, markets]) => {
-                if (selectedProd === 'All Products' || prod === selectedProd) { // Assuming 'All Products' is an option
-                    Object.entries(markets).forEach(([mkt, data]) => {
-                        demandRows.push({ prod, mkt, s: data.s, m: data.m, vol: data.vol });
-                        headerSales += data.s;
-                        headerMargin += data.m;
-                        headerVol += data.vol;
-                    });
-                }
+            // NEW: Populate demandRows from BOTH Actuals and Targets
+            const allProds = new Set(Object.keys(demandMatrix));
+
+            // Add Products from Targets
+            if (window.dbState.dtTargets && window.dbState.dtTargets[dateFilter]) {
+                Object.keys(window.dbState.dtTargets[dateFilter]).forEach(p => allProds.add(p));
+            }
+
+            allProds.forEach(prod => {
+                if (selectedProd !== 'All Products' && prod !== selectedProd) return;
+
+                const markets = demandMatrix[prod] || {};
+                const targetMarkets = (window.dbState.dtTargets && window.dbState.dtTargets[dateFilter] && window.dbState.dtTargets[dateFilter][prod]) ? window.dbState.dtTargets[dateFilter][prod] : {};
+
+                const allMkts = new Set(Object.keys(markets));
+
+                // Add Markets from Targets (exclude Customer targets which have '::')
+                Object.keys(targetMarkets).forEach(k => {
+                    if (!k.includes('::')) allMkts.add(k);
+                });
+
+                allMkts.forEach(mkt => {
+                    const data = markets[mkt] || { s: 0, m: 0, vol: 0 };
+                    // If no actuals, data is 0s. Target will be fetched by getDemandTarget later
+                    demandRows.push({ prod, mkt, s: data.s, m: data.m, vol: data.vol });
+                    headerSales += data.s;
+                    headerMargin += data.m;
+                    headerVol += data.vol;
+                });
             });
 
             // Update Header with Totals
