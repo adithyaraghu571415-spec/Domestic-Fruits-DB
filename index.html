@@ -1615,9 +1615,10 @@
                 console.log("Fetching Targets CSV...");
                 let text = "";
 
-                // 1. Try Direct Fetch
+                // 1. Try Direct Fetch with cache-busting (same as data fetch)
                 try {
-                    const res = await fetch(`${TARGETS_CSV_URL}&t=${Date.now()}`, { cache: "no-store" });
+                    const cacheBuster = (TARGETS_CSV_URL.includes('?') ? '&' : '?') + 'cb=' + Date.now();
+                    const res = await fetch(`${TARGETS_CSV_URL}${cacheBuster}`, { cache: "no-store" });
                     if (!res.ok) throw new Error("Direct fetch failed");
                     text = await res.text();
                 } catch (errDirect) {
