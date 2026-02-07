@@ -193,13 +193,15 @@
             try {
                 const response = await fetch(CLOUD_API_URL, {
                     method: 'POST',
-                    mode: 'no-cors', // Apps Script requires no-cors for simple POST
+                    mode: 'no-cors',
                     cache: 'no-cache',
+                    keepalive: true,
                     body: JSON.stringify({ sheet: type, ...data })
                 });
+                console.log(`[DEBUG] Save request sent to: ${CLOUD_API_URL}`);
                 window.showToast(`${type} Saved to Cloud!`);
             } catch (e) {
-                console.error(`Error saving ${type}:`, e);
+                console.error(`[DEBUG] Error saving ${type}:`, e);
                 window.showToast("Cloud sync failed (check console)");
             }
         };
@@ -207,8 +209,11 @@
         window.fetchCloudState = async () => {
             try {
                 // Add timestamp to bypass caching
+                console.log(`[DEBUG] Fetching cloud state from: ${CLOUD_API_URL}`);
                 const res = await fetch(`${CLOUD_API_URL}?t=${Date.now()}`, { cache: "no-store" });
+                if (!res.ok) throw new Error(`HTTP Error ${res.status}`);
                 const cloudData = await res.json();
+                console.log("[DEBUG] Cloud Data received:", cloudData);
 
                 // Merge cloud data into our local state
                 if (cloudData.users && Object.keys(cloudData.users).length > 0) {
@@ -227,7 +232,7 @@
                 window.dispatchEvent(new CustomEvent('db-updated'));
                 return true;
             } catch (e) {
-                console.error("Failed to fetch cloud state:", e);
+                console.error("[DEBUG] Failed to fetch cloud state:", e);
                 return false;
             }
         };
@@ -1607,7 +1612,7 @@
 
                 // 1. Try Direct Fetch
                 try {
-                    const res = await fetch(TARGETS_CSV_URL);
+                    const res = await fetch(`${TARGETS_CSV_URL}&t=${Date.now()}`, { cache: "no-store" });
                     if (!res.ok) throw new Error("Direct fetch failed");
                     text = await res.text();
                 } catch (errDirect) {
