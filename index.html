@@ -53,9 +53,11 @@
         }
 
         // Save users to localStorage and Cloud
+        // Save users to localStorage and Cloud
         window.saveUsers = () => {
             localStorage.setItem('fruitsDashboardUsers', JSON.stringify(window.usersDB));
-            window.saveToCloud('Users', { users: window.usersDB });
+            // Add timestamp in the payload to ensure uniqueness and bust cache
+            window.saveToCloud('Users', { users: window.usersDB, _t: Date.now() });
         };
 
         // Login function
@@ -1441,7 +1443,10 @@
             const url = `${window.location.href.split('?')[0]}?mode=viewer`;
             navigator.clipboard.writeText(url).then(() => window.showToast("Link Copied!"));
         }
-        function manualRefresh() { fetchCSVData(true); }
+        async function manualRefresh() {
+            await fetchTargetsCSV(); // Fetch fresh targets first
+            fetchCSVData(true);
+        }
 
         // MODAL LOGIC
         function showDrillDown(owner) {
