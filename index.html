@@ -1622,12 +1622,21 @@
                     if (!res.ok) throw new Error("Direct fetch failed");
                     text = await res.text();
                 } catch (errDirect) {
-                    console.warn("Direct fetch failed, trying CORS proxy...", errDirect);
-                    // 2. Try CORS Proxy
-                    const proxyUrl = "https://corsproxy.io/?" + encodeURIComponent(TARGETS_CSV_URL);
-                    const resProxy = await fetch(proxyUrl);
-                    if (!resProxy.ok) throw new Error("Proxy fetch failed");
-                    text = await resProxy.text();
+                    console.warn("Direct fetch failed, trying CORS proxy 1...", errDirect);
+                    // 2. Try CORS Proxy 1
+                    try {
+                        const proxyUrl1 = "https://corsproxy.io/?" + encodeURIComponent(TARGETS_CSV_URL);
+                        const resProxy1 = await fetch(proxyUrl1);
+                        if (!resProxy1.ok) throw new Error("Proxy 1 fetch failed");
+                        text = await resProxy1.text();
+                    } catch (errProxy1) {
+                        console.warn("Proxy 1 failed, trying Proxy 2...", errProxy1);
+                        // 3. Try CORS Proxy 2
+                        const proxyUrl2 = "https://api.allorigins.win/raw?url=" + encodeURIComponent(TARGETS_CSV_URL);
+                        const resProxy2 = await fetch(proxyUrl2);
+                        if (!resProxy2.ok) throw new Error("All fetch methods failed");
+                        text = await resProxy2.text();
+                    }
                 }
 
                 const rows = parseCSV(text);
