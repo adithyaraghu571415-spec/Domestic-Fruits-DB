@@ -1,0 +1,2870 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Domestic Fruits</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+
+    <!-- RBAC & Cloud Sync System -->
+    <script>
+        // ========== CLOUD CONFIGURATION ==========
+        const CLOUD_API_URL = "https://script.google.com/macros/s/AKfycbyUsBFR2Z0Fy1n9GRWTur4ppgtlSMYJh8dS1A017jAdI070A6iJ7syey_HrUUqmOWTxgg/exec";
+        const TARGETS_CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vS6zQmj2xCO5cOrEowyMgU48OGVl2hakWGmzGwDCBltMGJP9GgRQTiFAmvbkEebpdUg8zFNOMR38dVB/pub?gid=1313421068&single=true&output=csv";
+
+        // ========== AUTHENTICATION & RBAC SYSTEM ==========
+
+        // Simple hash function for passwords (NOT cryptographically secure, but fine for demo)
+        const hashPassword = (password) => {
+            let hash = 0;
+            for (let i = 0; i < password.length; i++) {
+                const char = password.charCodeAt(i);
+                hash = ((hash << 5) - hash) + char;
+                hash = hash & hash;
+            }
+            return 'h_' + Math.abs(hash).toString(36);
+        };
+
+        // Default users database
+        const defaultUsers = {
+            "adithyar@ninjacart.com": {
+                password: hashPassword("admin123"),
+                role: "admin",
+                mustChangePassword: true,
+                name: "Admin"
+            }
+        };
+
+        // Load users from localStorage or use defaults
+        const savedUsers = localStorage.getItem('fruitsDashboardUsers');
+        window.usersDB = savedUsers ? JSON.parse(savedUsers) : defaultUsers;
+
+        // Current session
+        window.currentUser = null;
+        const savedSession = localStorage.getItem('fruitsDashboardSession');
+        if (savedSession) {
+            const session = JSON.parse(savedSession);
+            if (window.usersDB[session.email]) {
+                window.currentUser = { email: session.email, ...window.usersDB[session.email] };
+            }
+        }
+
+        // Save users to localStorage and Cloud
+        window.saveUsers = () => {
+            localStorage.setItem('fruitsDashboardUsers', JSON.stringify(window.usersDB));
+            window.saveToCloud('Users', { users: window.usersDB });
+        };
+
+        // Login function
+        window.login = (email, password) => {
+            const trimmedEmail = (email || "").toLowerCase().trim();
+            console.log("Attempting login for:", trimmedEmail);
+
+            // Force reload from localStorage to ensure we have any newly added users
+            try {
+                const currentUsers = localStorage.getItem('fruitsDashboardUsers');
+                if (currentUsers) {
+                    window.usersDB = JSON.parse(currentUsers);
+                }
+            } catch (e) {
+                console.error("Error loading users from local storage:", e);
+            }
+
+            const user = window.usersDB[trimmedEmail];
+            if (!user) {
+                console.warn("User not found in DB. Available users:", Object.keys(window.usersDB));
+                return { success: false, error: "User not found. Contact admin." };
+            }
+
+            if (user.password !== hashPassword(password)) {
+                return { success: false, error: "Incorrect password." };
+            }
+
+            // Enforce hardcoded CSV URL
+            window.dbState.csvUrl = "https://docs.google.com/spreadsheets/d/e/2PACX-1vS6zQmj2xCO5cOrEowyMgU48OGVl2hakWGmzGwDCBltMGJP9GgRQTiFAmvbkEebpdUg8zFNOMR38dVB/pub?gid=2127058672&single=true&output=csv";
+            localStorage.setItem('fruitsDashboardState', JSON.stringify(window.dbState));
+
+            window.currentUser = { email: trimmedEmail, ...user };
+            localStorage.setItem('fruitsDashboardSession', JSON.stringify({ email: trimmedEmail }));
+            return { success: true, mustChangePassword: user.mustChangePassword };
+        };
+
+        // Logout function
+        window.logout = () => {
+            window.currentUser = null;
+            localStorage.removeItem('fruitsDashboardSession');
+            location.reload();
+        };
+
+        // Change password
+        window.changePassword = (oldPassword, newPassword) => {
+            if (!window.currentUser) return { success: false, error: "Not logged in" };
+            const email = window.currentUser.email;
+            const user = window.usersDB[email];
+
+            // For first-time change, oldPassword can be the temp password
+            if (!user.mustChangePassword && user.password !== hashPassword(oldPassword)) {
+                return { success: false, error: "Current password is incorrect" };
+            }
+
+            user.password = hashPassword(newPassword);
+            user.mustChangePassword = false;
+            window.usersDB[email] = user;
+            window.currentUser = { email, ...user };
+            window.saveUsers();
+            return { success: true };
+        };
+
+        // Add user (Admin/Central only)
+        window.addUser = (email, role, tempPassword) => {
+            if (!window.currentUser) return { success: false, error: "Not logged in" };
+            const myRole = window.currentUser.role;
+
+            if (myRole === 'viewer') return { success: false, error: "No permission" };
+            if (myRole === 'central' && role === 'admin') return { success: false, error: "Cannot create admin users" };
+
+            email = email.toLowerCase().trim();
+            if (window.usersDB[email]) return { success: false, error: "User already exists" };
+
+            window.usersDB[email] = {
+                password: hashPassword(tempPassword || 'temp123'),
+                role: role,
+                mustChangePassword: true,
+                name: email.split('@')[0]
+            };
+            window.saveUsers();
+            return { success: true };
+        };
+
+        // Remove user
+        window.removeUser = (email) => {
+            if (!window.currentUser) return { success: false, error: "Not logged in" };
+            const myRole = window.currentUser.role;
+            const targetUser = window.usersDB[email];
+
+            if (!targetUser) return { success: false, error: "User not found" };
+            if (email === window.currentUser.email) return { success: false, error: "Cannot remove yourself" };
+            if (myRole === 'viewer') return { success: false, error: "No permission" };
+            if (myRole === 'central' && targetUser.role === 'admin') return { success: false, error: "Cannot remove admin" };
+
+            delete window.usersDB[email];
+            window.saveUsers();
+            return { success: true };
+        };
+
+        // Update user role
+        window.updateUserRole = (email, newRole) => {
+            if (!window.currentUser) return { success: false, error: "Not logged in" };
+            const myRole = window.currentUser.role;
+
+            if (myRole !== 'admin') return { success: false, error: "Only admin can change roles" };
+            if (!window.usersDB[email]) return { success: false, error: "User not found" };
+
+            window.usersDB[email].role = newRole;
+            window.saveUsers();
+            return { success: true };
+        };
+
+        // Reset user password (Admin only)
+        window.resetUserPassword = (email, newTempPassword) => {
+            if (!window.currentUser || window.currentUser.role !== 'admin') {
+                return { success: false, error: "Only admin can reset passwords" };
+            }
+            if (!window.usersDB[email]) return { success: false, error: "User not found" };
+
+            window.usersDB[email].password = hashPassword(newTempPassword || 'reset123');
+            window.usersDB[email].mustChangePassword = true;
+            window.saveUsers();
+            return { success: true };
+        };
+
+        // Check role permissions
+        window.canEditTargets = () => ['admin', 'central'].includes(window.currentUser?.role);
+        window.canEditCSV = () => window.currentUser?.role === 'admin';
+        window.canManageUsers = () => ['admin', 'central'].includes(window.currentUser?.role);
+        window.canSeeSettings = () => ['admin', 'central'].includes(window.currentUser?.role);
+
+        // ========== CLOUD SYNC ENGINE ==========
+        window.saveToCloud = async (type, data) => {
+            console.log(`Saving ${type} to cloud...`);
+            try {
+                const response = await fetch(CLOUD_API_URL, {
+                    method: 'POST',
+                    mode: 'no-cors', // Apps Script requires no-cors for simple POST
+                    cache: 'no-cache',
+                    body: JSON.stringify({ sheet: type, ...data })
+                });
+                window.showToast(`${type} Saved to Cloud!`);
+            } catch (e) {
+                console.error(`Error saving ${type}:`, e);
+                window.showToast("Cloud sync failed (check console)");
+            }
+        };
+
+        window.fetchCloudState = async () => {
+            try {
+                // Add timestamp to bypass caching
+                const res = await fetch(`${CLOUD_API_URL}?t=${Date.now()}`, { cache: "no-store" });
+                const cloudData = await res.json();
+
+                // Merge cloud data into our local state
+                if (cloudData.users && Object.keys(cloudData.users).length > 0) {
+                    window.usersDB = cloudData.users;
+                    localStorage.setItem('fruitsDashboardUsers', JSON.stringify(window.usersDB));
+                }
+
+                // TARGETS ARE NOW READ-ONLY FROM CSV via fetchTargetsCSV()
+                // We do NOT overwrite them from Cloud Script anymore.
+
+                if (cloudData.settings && cloudData.settings.estPricePerBox) {
+                    window.dbState.estPricePerBox = cloudData.settings.estPricePerBox;
+                }
+
+                localStorage.setItem('fruitsDashboardState', JSON.stringify(window.dbState));
+                window.dispatchEvent(new CustomEvent('db-updated'));
+                return true;
+            } catch (e) {
+                console.error("Failed to fetch cloud state:", e);
+                return false;
+            }
+        };
+
+        // ========== DASHBOARD STATE ==========
+        const defaultState = {
+            csvUrl: "https://docs.google.com/spreadsheets/d/e/2PACX-1vS6zQmj2xCO5cOrEowyMgU48OGVl2hakWGmzGwDCBltMGJP9GgRQTiFAmvbkEebpdUg8zFNOMR38dVB/pub?gid=2127058672&single=true&output=csv",
+            targets: {},   // Structure: Month -> Owner -> Data
+            dtTargets: {}, // Structure: Month -> Product -> Market -> Data
+            estPricePerBox: 1000,
+            lastUpdated: 0
+        };
+
+        const savedState = localStorage.getItem('fruitsDashboardState');
+        window.dbState = savedState ? { ...defaultState, ...JSON.parse(savedState) } : defaultState;
+
+        // CRITICAL: Always use the hardcoded default URL to prevent localStorage overrides
+        window.dbState.csvUrl = defaultState.csvUrl;
+
+        window.rawData = [];
+        window.monthFilterInitialized = false;
+
+        window.saveToCloudLegacy = (newUrl, newTargets, newEstPrice) => {
+            try {
+                if (newUrl !== undefined && window.canEditCSV()) window.dbState.csvUrl = newUrl;
+                if (newTargets !== undefined && window.canEditTargets()) {
+                    window.dbState.targets = newTargets;
+                    window.saveToCloud('Targets', { targets: newTargets });
+                }
+                // Legacy wrapper not typically used for new DT targets, but ensuring safety
+                if (window.dbState.dtTargets) {
+                    window.saveToCloud('DT_Targets', { dtTargets: window.dbState.dtTargets });
+                }
+                if (newEstPrice !== undefined) {
+                    window.dbState.estPricePerBox = newEstPrice;
+                    window.saveToCloud('Settings', { estPricePerBox: newEstPrice });
+                }
+                window.dbState.lastUpdated = new Date().toISOString();
+                localStorage.setItem('fruitsDashboardState', JSON.stringify(window.dbState));
+                window.showToast("Settings Saved!");
+            } catch (e) {
+                window.showToast("Error saving: " + e.message);
+            }
+        };
+
+        setTimeout(() => {
+            const urlInput = document.getElementById('csv-url');
+            if (urlInput) urlInput.value = window.dbState.csvUrl;
+            window.dispatchEvent(new CustomEvent('db-updated'));
+        }, 100);
+    </script>
+
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');
+
+        :root {
+            --primary: #2563eb;
+            --success: #10b981;
+            --warning: #f59e0b;
+            --bg-soft: #f8fafc;
+        }
+
+        body {
+            font-family: 'Plus Jakarta Sans', sans-serif;
+            background-color: var(--bg-soft);
+            color: #1e293b;
+        }
+
+        .kpi-grid {
+            display: grid;
+            grid-template-columns: repeat(1, 1fr);
+            gap: 1rem;
+        }
+
+        @media (min-width: 640px) {
+            .kpi-grid {
+                grid-template-columns: repeat(3, 1fr);
+            }
+        }
+
+        .secondary-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 1rem;
+        }
+
+        @media (min-width: 1024px) {
+            .secondary-grid {
+                grid-template-columns: repeat(4, 1fr);
+            }
+        }
+
+        .kpi-card {
+            background: white;
+            padding: 1.25rem;
+            border-radius: 1rem;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+        }
+
+        .chart-container {
+            position: relative;
+            height: 300px;
+            width: 100%;
+        }
+
+        .toast {
+            position: fixed;
+            bottom: 2rem;
+            left: 50%;
+            transform: translateX(-50%) translateY(100px);
+            background: #1e293b;
+            color: white;
+            padding: 0.75rem 1.5rem;
+            border-radius: 99px;
+            font-weight: 600;
+            transition: transform 0.3s;
+            z-index: 50;
+        }
+
+        .toast.show {
+            transform: translateX(-50%) translateY(0);
+        }
+
+        .custom-scroll::-webkit-scrollbar {
+            height: 6px;
+            width: 6px;
+        }
+
+        .custom-scroll::-webkit-scrollbar-thumb {
+            background: #cbd5e1;
+            border-radius: 10px;
+        }
+
+        input[type="number"]::-webkit-inner-spin-button,
+        input[type="number"]::-webkit-outer-spin-button {
+            -webkit-appearance: none;
+            margin: 0;
+        }
+
+        /* Modal Styles */
+        #drilldown-modal {
+            backdrop-filter: blur(4px);
+        }
+
+        .clickable-row {
+            cursor: pointer;
+            transition: background-color 0.2s;
+        }
+
+        .clickable-row:hover {
+            transform: scale(1.01);
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+            z-index: 10;
+            position: relative;
+        }
+    </style>
+</head>
+
+<body class="min-h-screen pb-20 relative">
+
+    <div id="toast" class="toast">Action completed!</div>
+
+    <!-- LOGIN OVERLAY -->
+    <div id="login-overlay"
+        class="fixed inset-0 z-[200] bg-gradient-to-br from-slate-900 via-blue-900 to-slate-900 flex items-center justify-center p-4">
+        <div class="bg-white rounded-3xl shadow-2xl w-full max-w-md p-8 text-center">
+            <div class="w-16 h-16 bg-blue-600 rounded-2xl flex items-center justify-center text-white mx-auto mb-6">
+                <i class="fas fa-chart-pie text-2xl"></i>
+            </div>
+            <h1 class="text-2xl font-extrabold text-slate-800 mb-1">Domestic Fruits</h1>
+            <p class="text-blue-600 font-bold mb-6">Dashboard</p>
+
+            <div id="login-error" class="hidden bg-red-50 text-red-600 text-xs font-bold p-3 rounded-xl mb-4"></div>
+
+            <div class="space-y-4 text-left">
+                <div>
+                    <label
+                        class="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-2 block">Email</label>
+                    <input type="email" id="login-email" placeholder="you@company.com"
+                        class="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-medium outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500">
+                </div>
+                <div>
+                    <label
+                        class="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-2 block">Password</label>
+                    <input type="password" id="login-password" placeholder="••••••••"
+                        class="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-medium outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                        onkeypress="if(event.key==='Enter') handleLogin()">
+                </div>
+            </div>
+
+            <button onclick="handleLogin()"
+                class="w-full mt-6 bg-blue-600 text-white py-4 rounded-xl font-bold hover:bg-blue-700 shadow-lg flex items-center justify-center gap-2 transition-colors">
+                <i class="fas fa-lock"></i> Sign In
+            </button>
+
+            <p class="text-xs text-slate-400 mt-6">Forgot password? Contact your admin.</p>
+        </div>
+    </div>
+
+    <!-- PASSWORD CHANGE MODAL -->
+    <div id="password-modal" class="fixed inset-0 z-[150] bg-slate-900/60 hidden flex items-center justify-center p-4"
+        style="backdrop-filter: blur(4px);">
+        <div class="bg-white rounded-2xl shadow-2xl w-full max-w-md p-6">
+            <div class="flex items-center gap-3 mb-6">
+                <div class="w-10 h-10 bg-amber-100 rounded-xl flex items-center justify-center text-amber-600">
+                    <i class="fas fa-key"></i>
+                </div>
+                <div>
+                    <h3 class="text-lg font-extrabold text-slate-800" id="password-modal-title">Change Password</h3>
+                    <p class="text-xs text-slate-500" id="password-modal-subtitle">Create a strong password</p>
+                </div>
+            </div>
+
+            <div id="password-error" class="hidden bg-red-50 text-red-600 text-xs font-bold p-3 rounded-xl mb-4"></div>
+
+            <div class="space-y-4">
+                <div id="old-password-group">
+                    <label class="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-2 block">Current
+                        Password</label>
+                    <input type="password" id="old-password" placeholder="••••••••"
+                        class="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-medium outline-none focus:ring-2 focus:ring-blue-500">
+                </div>
+                <div>
+                    <label class="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-2 block">New
+                        Password</label>
+                    <input type="password" id="new-password" placeholder="Min 6 characters"
+                        class="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-medium outline-none focus:ring-2 focus:ring-blue-500">
+                </div>
+                <div>
+                    <label class="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-2 block">Confirm
+                        Password</label>
+                    <input type="password" id="confirm-password" placeholder="••••••••"
+                        class="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-medium outline-none focus:ring-2 focus:ring-blue-500"
+                        onkeypress="if(event.key==='Enter') handlePasswordChange()">
+                </div>
+            </div>
+
+            <div class="flex gap-3 mt-6">
+                <button onclick="closePasswordModal()" id="password-cancel-btn"
+                    class="flex-1 py-3 bg-slate-100 text-slate-700 rounded-xl font-bold hover:bg-slate-200 transition-colors">Cancel</button>
+                <button onclick="handlePasswordChange()"
+                    class="flex-1 py-3 bg-blue-600 text-white rounded-xl font-bold hover:bg-blue-700 transition-colors">Save
+                    Password</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Drill Down Modal -->
+    <div id="drilldown-modal" class="fixed inset-0 z-[60] bg-slate-900/40 hidden flex items-center justify-center p-4">
+        <div
+            class="bg-white rounded-2xl shadow-2xl w-full max-w-4xl max-h-[80vh] flex flex-col overflow-hidden animate-in fade-in zoom-in duration-200">
+            <div class="p-6 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
+                <div>
+                    <h3 class="text-lg font-extrabold text-slate-800" id="modal-title">Trade Details</h3>
+                    <p class="text-xs text-slate-500" id="modal-subtitle">Full transaction list</p>
+                </div>
+                <button onclick="closeModal()"
+                    class="w-8 h-8 rounded-full bg-slate-100 hover:bg-slate-200 flex items-center justify-center text-slate-500 transition-colors">
+                    <i class="fas fa-times"></i>
+                </button>
+            </div>
+            <div class="flex-1 overflow-auto custom-scroll p-6">
+                <!-- Wrapper for Trade Transactions List -->
+                <div id="modal-table-container">
+                    <table class="w-full text-left border-collapse text-xs">
+                        <thead>
+                            <tr class="bg-slate-50 text-slate-400 uppercase tracking-widest font-bold border-b">
+                                <th class="p-3">Closure Date</th>
+                                <th class="p-3">Dispatch Date</th>
+                                <th class="p-3">Customer</th>
+                                <th class="p-3">Mark</th>
+                                <th class="p-3 text-right">Boxes</th>
+                                <th class="p-3 text-right">Sales</th>
+                                <th class="p-3 text-right">Margin</th>
+                            </tr>
+                        </thead>
+                        <tbody id="modal-body" class="divide-y divide-slate-100 text-slate-700 font-medium">
+                            <!-- Populated via JS -->
+                        </tbody>
+                    </table>
+                </div>
+                <!-- Wrapper for Customer Summary (Drill Down) -->
+                <div id="modal-summary-container" class="hidden"></div>
+            </div>
+            <div class="p-4 bg-slate-50 border-t border-slate-100 text-right">
+                <button onclick="closeModal()"
+                    class="px-4 py-2 bg-slate-800 text-white rounded-lg text-xs font-bold hover:bg-slate-700">Close</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Sidebar -->
+    <div id="config-sidebar"
+        class="fixed right-0 top-0 h-full w-full sm:w-96 bg-white border-l z-[100] shadow-2xl transition-transform duration-300 translate-x-full flex flex-col">
+        <div class="p-6 border-b flex justify-between items-center bg-white sticky top-0">
+            <h2 class="text-xl font-extrabold text-slate-800">Settings</h2>
+            <button onclick="toggleConfig()"
+                class="w-10 h-10 flex items-center justify-center hover:bg-slate-100 rounded-full"><i
+                    class="fas fa-times"></i></button>
+        </div>
+        <div class="flex-1 overflow-y-auto p-6 space-y-8">
+            <!-- CSV Source - Removed from UI -->
+            <section id="csv-section" class="hidden">
+                <textarea id="csv-url"></textarea>
+            </section>
+
+            <!-- Targets - Admin & Central -->
+
+
+            <!-- User Management - Admin & Central -->
+            <section id="users-section" class="border-t pt-6">
+                <label class="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-3 block">
+                    <i class="fas fa-users mr-1"></i> User Management
+                </label>
+
+                <!-- Add User Form -->
+                <div class="bg-slate-50 p-4 rounded-2xl border mb-4">
+                    <label class="text-[9px] font-bold text-slate-400 uppercase mb-2 block">Add New User</label>
+                    <div class="space-y-3">
+                        <input type="email" id="new-user-email" placeholder="email@company.com"
+                            class="w-full px-3 py-2 bg-white border rounded-xl text-xs outline-none focus:ring-2 focus:ring-blue-500">
+                        <div class="flex gap-2">
+                            <select id="new-user-role"
+                                class="flex-1 px-3 py-2 bg-white border rounded-xl text-xs outline-none focus:ring-2 focus:ring-blue-500">
+                                <option value="viewer">Viewer</option>
+                                <option value="central">Central Team</option>
+                                <option value="admin" id="admin-role-option">Admin</option>
+                            </select>
+                            <input type="text" id="new-user-temp-pass" placeholder="Temp password"
+                                class="flex-1 px-3 py-2 bg-white border rounded-xl text-xs outline-none focus:ring-2 focus:ring-blue-500">
+                        </div>
+                        <button onclick="handleAddUser()"
+                            class="w-full py-2 bg-emerald-500 text-white rounded-xl text-xs font-bold hover:bg-emerald-600 flex items-center justify-center gap-2">
+                            <i class="fas fa-plus"></i> Add User
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Users List -->
+                <div id="users-list" class="space-y-2 max-h-[300px] overflow-y-auto custom-scroll"></div>
+            </section>
+
+            <!-- My Account -->
+            <section class="border-t pt-6">
+                <label class="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-3 block">
+                    <i class="fas fa-user mr-1"></i> My Account
+                </label>
+                <button onclick="showPasswordModal(false)"
+                    class="w-full py-3 bg-slate-100 text-slate-700 rounded-xl text-xs font-bold hover:bg-slate-200 flex items-center justify-center gap-2">
+                    <i class="fas fa-key"></i> Change My Password
+                </button>
+            </section>
+        </div>
+        <div class="p-6 bg-slate-50 border-t">
+            <button onclick="saveAndRefresh()"
+                class="w-full bg-blue-600 text-white py-4 rounded-2xl font-bold hover:bg-blue-700 shadow-lg flex items-center justify-center gap-3"><i
+                    class="fas fa-cloud-upload-alt"></i> Save All & Sync</button>
+        </div>
+    </div>
+
+    <!-- Header -->
+    <nav class="h-20 border-b bg-white/80 backdrop-blur-md sticky top-0 z-40 px-4 md:px-8">
+        <div class="max-w-7xl mx-auto h-full flex items-center justify-between">
+            <div class="flex items-center gap-3">
+                <div class="w-10 h-10 bg-blue-600 rounded-xl flex items-center justify-center text-white"><i
+                        class="fas fa-chart-pie"></i></div>
+                <div>
+                    <h1 class="text-lg font-extrabold text-slate-900 hidden sm:block">Domestic Fruits</h1>
+                    <h1 class="text-lg font-extrabold text-slate-900 sm:hidden">Fruits</h1>
+                    <div id="status-tag"
+                        class="text-[9px] font-bold text-slate-400 uppercase flex items-center gap-1.5 mt-0.5"><span
+                            class="w-1.5 h-1.5 rounded-full bg-slate-300"></span> Connecting...</div>
+                </div>
+            </div>
+            <div class="flex items-center gap-2 md:gap-3">
+                <!-- Month Filter -->
+                <div class="relative">
+                    <i
+                        class="fas fa-calendar-alt absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 text-xs"></i>
+                    <select id="month-filter" onchange="filterAndRender()"
+                        class="bg-slate-50 border border-slate-200 text-slate-700 text-xs font-bold pl-8 pr-3 py-2 rounded-xl outline-none focus:ring-2 focus:ring-blue-500 appearance-none cursor-pointer hover:bg-slate-100 transition-colors">
+                        <option value="All">All Months</option>
+                    </select>
+                </div>
+
+                <!-- Data Month Indicator -->
+                <div
+                    class="hidden md:flex bg-blue-50 text-blue-700 text-xs font-bold px-3 py-1.5 rounded-lg border border-blue-100 items-center gap-2">
+                    <i class="fas fa-database"></i> Live
+                </div>
+
+                <div class="hidden md:flex items-center gap-3 pr-4 border-r">
+                    <span id="last-sync-time" class="text-[9px] font-bold text-slate-400 uppercase">Connecting...</span>
+                    <button onclick="manualRefresh()"
+                        class="w-8 h-8 rounded-full bg-blue-50 text-blue-600 hover:bg-blue-100"><i id="nav-sync-icon"
+                            class="fas fa-sync-alt text-xs"></i></button>
+                </div>
+
+                <!-- User Info & Settings -->
+                <div id="user-info" class="hidden items-center gap-2">
+                    <div class="text-right hidden sm:block">
+                        <div id="user-email-display"
+                            class="text-[10px] font-bold text-slate-700 truncate max-w-[120px]"></div>
+                        <div id="user-role-display" class="text-[9px] font-medium text-slate-400 uppercase"></div>
+                    </div>
+                    <button id="settings-btn" onclick="toggleConfig()"
+                        class="hidden bg-slate-900 text-white px-4 py-2 rounded-xl text-xs font-bold items-center gap-2"><span
+                            class="hidden sm:inline">Settings</span> <i class="fas fa-sliders-h"></i></button>
+                    <button onclick="logout()" title="Sign Out"
+                        class="w-8 h-8 rounded-full bg-red-50 text-red-500 hover:bg-red-100 flex items-center justify-center"><i
+                            class="fas fa-sign-out-alt text-xs"></i></button>
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <main class="max-w-7xl mx-auto p-4 md:p-8 space-y-8">
+        <!-- Primary KPIs -->
+        <section class="kpi-grid">
+            <div class="kpi-card border-l-4 border-l-blue-500">
+                <span class="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Closed Sales</span>
+                <div id="mtd-sales" class="text-2xl font-extrabold text-slate-800 mt-1">₹0</div>
+            </div>
+            <div class="kpi-card border-l-4 border-l-emerald-500">
+                <span class="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Total Margin</span>
+                <div id="mtd-margin" class="text-2xl font-extrabold text-slate-800 mt-1">₹0</div>
+            </div>
+            <div class="kpi-card border-l-4 border-l-amber-500">
+                <span class="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Yield %</span>
+                <div id="margin-pct" class="text-2xl font-extrabold text-slate-800 mt-1">0.0%</div>
+            </div>
+        </section>
+
+        <!-- Open Inventory & Projection -->
+        <section class="bg-gradient-to-r from-slate-800 to-slate-900 rounded-2xl p-6 text-white shadow-lg">
+            <div class="flex flex-col md:flex-row md:items-center justify-between gap-6">
+                <div class="space-y-2">
+                    <div class="flex items-center gap-2 text-slate-300">
+                        <i class="fas fa-box-open"></i> <span class="text-xs font-bold uppercase tracking-widest">Open
+                            Inventory</span>
+                    </div>
+                    <div class="flex items-end gap-4">
+                        <div>
+                            <div class="text-3xl font-black" id="total-open-boxes">0</div>
+                            <div class="text-[10px] text-slate-400 uppercase">Pending Boxes</div>
+                        </div>
+                        <div class="h-8 w-px bg-slate-700"></div>
+                        <div class="flex flex-col">
+                            <label class="text-[9px] text-slate-400 mb-1">Est. Price / Box (₹)</label>
+                            <input type="number" id="global-est-price"
+                                class="w-24 bg-slate-700 border border-slate-600 rounded text-white px-2 py-1 text-sm font-bold focus:ring-2 focus:ring-blue-500 outline-none"
+                                placeholder="1000" onchange="updateGlobalPrice(this.value)">
+                        </div>
+                    </div>
+                </div>
+                <div class="bg-white/10 rounded-xl p-4 border border-white/5 flex-1 max-w-lg">
+                    <div class="flex justify-between items-end mb-2">
+                        <span class="text-[10px] font-bold text-blue-200 uppercase tracking-widest">Projected Revenue
+                            (Open)</span>
+                        <span id="projected-open-val" class="text-lg font-bold text-blue-300">₹0</span>
+                    </div>
+                    <div class="h-px bg-white/10 w-full my-2"></div>
+                    <div class="flex justify-between items-end">
+                        <span class="text-xs font-bold text-white uppercase tracking-widest">Total Potential
+                            Revenue</span>
+                        <span id="total-potential-rev" class="text-2xl font-black text-white">₹0</span>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Secondary KPIs -->
+        <section class="secondary-grid">
+            <div class="kpi-card bg-slate-50 border-slate-200">
+                <span class="text-[9px] font-bold text-slate-400 uppercase">Avg. Realisation</span>
+                <div class="flex items-baseline gap-1"><span id="kpi-global-rate"
+                        class="text-lg font-bold text-slate-700">₹0</span><span class="text-[10px] text-slate-400">/
+                        Kg</span></div>
+            </div>
+            <div class="kpi-card bg-slate-50 border-slate-200">
+                <span class="text-[9px] font-bold text-slate-400 uppercase">Top Source Market</span>
+                <div class="flex items-baseline gap-1"><span id="kpi-top-market"
+                        class="text-sm font-bold text-slate-700 truncate block w-full">-</span></div>
+            </div>
+            <div class="kpi-card bg-slate-50 border-slate-200">
+                <span class="text-[9px] font-bold text-slate-400 uppercase">Total Volume</span>
+                <div class="flex items-baseline gap-1"><span id="kpi-volume"
+                        class="text-lg font-bold text-slate-700">0</span><span class="text-[10px] text-slate-400">Closed
+                        Boxes</span></div>
+            </div>
+            <div class="kpi-card bg-slate-50 border-slate-200">
+                <span class="text-[9px] font-bold text-slate-400 uppercase">Active Customers</span>
+                <div class="flex items-baseline gap-1"><span id="kpi-customers"
+                        class="text-lg font-bold text-slate-700">0</span><span
+                        class="text-[10px] text-slate-400">Unique</span></div>
+            </div>
+        </section>
+
+        <!-- Main Content -->
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
+            <div class="lg:col-span-2 space-y-6">
+                <div class="flex items-center justify-between">
+                    <h3 class="text-sm font-extrabold text-slate-800 uppercase tracking-widest">Ownership Matrix</h3>
+                    <span class="text-[9px] text-slate-400 font-medium bg-slate-100 px-2 py-1 rounded">Click row for
+                        details</span>
+                </div>
+                <div class="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden">
+                    <div class="overflow-x-auto custom-scroll">
+                        <table class="w-full text-left border-collapse min-w-[600px]">
+                            <thead>
+                                <tr
+                                    class="bg-gradient-to-r from-slate-800 to-slate-700 text-white text-[10px] font-bold uppercase tracking-widest">
+                                    <th class="px-6 py-4 align-top">
+                                        <div class="text-[10px] font-bold uppercase tracking-widest text-white">Owner
+                                        </div>
+                                    </th>
+                                    <th class="px-6 py-4 text-center align-top">
+                                        <div class="text-[10px] font-bold uppercase tracking-widest text-slate-300">
+                                            Volume (Boxes)
+                                        </div>
+                                    </th>
+                                    <th class="px-6 py-4 text-right align-top">
+                                        <div class="text-[10px] font-bold uppercase tracking-widest text-slate-300">
+                                            Sales vs Goal</div>
+                                    </th>
+                                    <th class="px-6 py-4 text-right align-top">
+                                        <div class="text-[10px] font-bold uppercase tracking-widest text-slate-300">
+                                            Margin vs Goal</div>
+                                    </th>
+                                    <th class="px-6 py-4 text-right align-top">
+                                        <div class="text-[10px] font-bold uppercase tracking-widest text-slate-300">
+                                            Yield</div>
+                                    </th>
+                                </tr>
+                            </thead>
+                            <tbody id="mark-breakdown-body" class="divide-y divide-slate-50"></tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Demand Matrix (New) -->
+                <!-- Demand Matrix (New) -->
+                <div class="mt-6">
+                    <div class="flex justify-between items-center mb-4">
+                        <div class="flex flex-col sm:flex-row sm:items-baseline gap-2 sm:gap-4">
+                            <h3 id="demand-matrix-title"
+                                class="text-xs font-extrabold text-slate-800 uppercase tracking-widest whitespace-nowrap">
+                                Demand Matrix</h3>
+                            <div id="demand-header-stats" class="flex items-center gap-2"></div>
+                        </div>
+                        <select id="demand-matrix-product-filter" onchange="filterAndRender()"
+                            class="text-[10px] bg-slate-50 border-slate-200 rounded-lg px-2 py-1 font-bold text-slate-600 outline-none focus:ring-1 focus:ring-blue-500 cursor-pointer min-w-[120px]"></select>
+                    </div>
+                    <div class="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden">
+                        <div class="overflow-x-auto custom-scroll">
+                            <table class="w-full text-left border-collapse min-w-[600px]">
+                                <thead>
+                                    <tr
+                                        class="bg-gradient-to-r from-slate-800 to-slate-700 text-white text-[10px] font-bold uppercase tracking-widest">
+                                        <th class="px-6 py-4 align-top">
+                                            <div class="text-[10px] font-bold uppercase tracking-widest text-white">
+                                                Market</div>
+                                        </th>
+                                        <th class="px-6 py-4 text-right align-top">
+                                            <div
+                                                class="text-[10px] font-bold uppercase tracking-widest text-slate-300 mb-1">
+                                                Volume (Boxes)</div>
+                                            <div id="dm-header-vol" class="text-xs font-bold text-white">-</div>
+                                        </th>
+                                        <th class="px-6 py-4 text-right align-top">
+                                            <div
+                                                class="text-[10px] font-bold uppercase tracking-widest text-slate-300 mb-1">
+                                                Sales vs Goal</div>
+                                            <div id="dm-header-sales" class="text-xs font-bold text-white">-</div>
+                                        </th>
+                                        <th class="px-6 py-4 text-right align-top">
+                                            <div
+                                                class="text-[10px] font-bold uppercase tracking-widest text-slate-300 mb-1">
+                                                Margin</div>
+                                            <div id="dm-header-margin" class="text-xs font-bold text-white">-</div>
+                                        </th>
+                                        <th class="px-6 py-4 text-right align-top">
+                                            <div
+                                                class="text-[10px] font-bold uppercase tracking-widest text-slate-300 mb-1">
+                                                Yield</div>
+                                            <div id="dm-header-yield" class="text-xs font-bold text-white">-</div>
+                                        </th>
+                                    </tr>
+                                </thead>
+                                <tbody id="demand-matrix-body" class="divide-y divide-slate-50"></tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- NEW DISPATCH VOLUME CHART (Karan & Kishore) -->
+                <div class="bg-white border border-slate-200 rounded-2xl p-6 shadow-sm">
+                    <h3 class="text-xs font-extrabold text-slate-800 uppercase tracking-widest mb-4">Last 7 Days
+                        Dispatch (Karan & Kishore)</h3>
+                    <div class="chart-container"><canvas id="dispatchChart"></canvas></div>
+                    <div class="mt-4 flex flex-wrap gap-4 justify-center">
+                        <div class="flex items-center gap-2"><span class="w-3 h-3 rounded-full bg-blue-500"></span><span
+                                class="text-[9px] font-bold text-slate-500 uppercase">Karan OM</span></div>
+                        <div class="flex items-center gap-2"><span class="w-3 h-3 rounded-full bg-blue-300"></span><span
+                                class="text-[9px] font-bold text-slate-500 uppercase">Karan CM</span></div>
+                        <div class="flex items-center gap-2"><span
+                                class="w-3 h-3 rounded-full bg-emerald-500"></span><span
+                                class="text-[9px] font-bold text-slate-500 uppercase">Kishore OM</span></div>
+                        <div class="flex items-center gap-2"><span
+                                class="w-3 h-3 rounded-full bg-emerald-300"></span><span
+                                class="text-[9px] font-bold text-slate-500 uppercase">Kishore CM</span></div>
+                    </div>
+                </div>
+
+
+
+                <!-- NEW SOURCE MARKET CHART -->
+                <div class="bg-white border border-slate-200 rounded-2xl p-6 shadow-sm mt-6">
+                    <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-4">
+                        <h3 class="text-xs font-extrabold text-slate-800 uppercase tracking-widest">Cumulative Sales
+                            Growth (Closed GMV)</h3>
+
+                        <!-- Checkbox Dropdown -->
+                        <div class="flex items-center gap-2 relative">
+                            <span class="text-[9px] text-slate-400 font-bold uppercase">Filter:</span>
+                            <div class="relative">
+                                <button onclick="toggleSourceDropdown(event)"
+                                    class="flex items-center justify-between w-48 text-xs border border-slate-300 rounded-lg px-3 py-2 bg-slate-50 hover:bg-slate-100 font-bold text-slate-700 transition-colors focus:outline-none focus:ring-2 focus:ring-blue-100">
+                                    <span id="source-filter-label" class="truncate">All Sources</span>
+                                    <i class="fas fa-chevron-down text-slate-400 text-[10px] ml-2"></i>
+                                </button>
+
+                                <div id="source-dropdown-menu"
+                                    class="hidden absolute top-full right-0 mt-2 w-56 bg-white border border-slate-200 rounded-xl shadow-xl z-20 p-2 max-h-60 overflow-y-auto custom-scroll animate-in fade-in zoom-in-95 duration-100 origin-top-right">
+                                    <!-- Checkboxes injected here -->
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="chart-container"><canvas id="sourceChart"></canvas></div>
+                </div>
+            </div>
+            <div class="space-y-6">
+                <div class="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm">
+                    <h3 class="text-xs font-extrabold text-slate-800 uppercase tracking-widest mb-4">Top 5 Customers
+                        (Margin)</h3>
+                    <div id="top-customers-list" class="space-y-3"></div>
+                </div>
+                <!-- NEW TOP MARKET SECTION -->
+                <div class="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm">
+                    <div class="flex justify-between items-center mb-4">
+                        <h3 class="text-xs font-extrabold text-slate-800 uppercase tracking-widest">Top Market (DT)</h3>
+                        <select id="dt-market-product-filter" onchange="renderTopMarkets()"
+                            class="text-[10px] bg-slate-50 border-slate-200 rounded-lg px-2 py-1 font-bold text-slate-600 outline-none focus:ring-1 focus:ring-blue-500 cursor-pointer"></select>
+                    </div>
+                    <div id="top-market-list" class="space-y-3"></div>
+                </div>
+                <div class="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm">
+                    <h3 class="text-xs font-extrabold text-slate-800 uppercase tracking-widest mb-4">Source Market
+                        Performance</h3>
+                    <div id="source-market-list" class="space-y-3"></div>
+                </div>
+                <div class="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm">
+                    <h3 class="text-xs font-extrabold text-slate-800 uppercase tracking-widest mb-4">Trade Corridor
+                        Analysis</h3>
+                    <div id="corridor-list" class="space-y-3"></div>
+                </div>
+            </div>
+        </div>
+
+        <div id="empty-state"
+            class="hidden py-24 px-6 text-center bg-white border-2 border-dashed border-slate-200 rounded-[2rem] mx-auto mt-8">
+            <div class="w-20 h-20 bg-slate-50 text-slate-300 rounded-3xl flex items-center justify-center mx-auto mb-6">
+                <i class="fas fa-database text-3xl"></i>
+            </div>
+            <h3 class="text-xl font-extrabold text-slate-800">Initializing...</h3>
+            <div class="text-sm text-slate-500 mt-2">Connecting to data source...</div>
+        </div>
+    </main>
+
+    <script>
+        // Compact currency format for Lakhs/Crores
+        const compactRupee = new Intl.NumberFormat('en-IN', {
+            style: 'currency',
+            currency: 'INR',
+            notation: "compact",
+            maximumFractionDigits: 2
+        });
+
+        // Standard format for table drilldowns
+        const standardRupee = new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 });
+
+        // Smart formatter for Lakhs/Crores
+        const formatLakhsCrores = (value) => {
+            if (!value || value === 0) return '₹0';
+
+            const absValue = Math.abs(value);
+
+            // Use Crores for values >= 1 Crore (10 million)
+            if (absValue >= 10000000) {
+                const crores = value / 10000000;
+                return `₹${crores.toFixed(crores >= 100 ? 0 : crores >= 10 ? 1 : 2)}Cr`;
+            }
+            // Use Lakhs for values >= 1 Lakh (100,000)
+            else if (absValue >= 100000) {
+                const lakhs = value / 100000;
+                return `₹${lakhs.toFixed(lakhs >= 100 ? 0 : lakhs >= 10 ? 1 : 2)}L`;
+            }
+            // Use compact format for smaller values
+            else {
+                return compactRupee.format(value);
+            }
+        };
+
+        const OWNER_ORDER = ["Karan", "Kishore", "Amit / Bharath", "Amit", "Kishore (Known Party)", "Central (Known Party)"];
+        let trendChart = null;
+        let sourceChart = null;
+        let dispatchChart = null;
+        let allClosedTransactions = []; // Store raw data for dynamic filtering
+        window.allDTTransactions = []; // Store data for Top Market section
+
+        window.addEventListener('DOMContentLoaded', async () => {
+            // INITIAL PHASE: Load users from Cloud before anything else
+            updateStatus('Syncing Cloud...', 'bg-blue-400');
+            await window.fetchCloudState();
+
+            // ============ AUTHENTICATION CHECK ============
+            if (!window.currentUser) {
+                // Show login overlay, hide dashboard
+                document.getElementById('login-overlay').classList.remove('hidden');
+                return; // Don't load dashboard until logged in
+            }
+
+            // User is logged in - initialize dashboard
+            initializeDashboard();
+        });
+
+        // Initialize dashboard after successful login
+        function initializeDashboard() {
+            // Hide login overlay
+            document.getElementById('login-overlay').classList.add('hidden');
+
+            // CRITICAL: Start sync immediately even before password change
+            fetchCSVData();
+
+            // Check if user must change password
+            if (window.currentUser.mustChangePassword) {
+                showPasswordModal(true);
+                return;
+            }
+
+            // Show user info in header
+            document.getElementById('user-info').classList.remove('hidden');
+            document.getElementById('user-info').classList.add('flex');
+            document.getElementById('user-email-display').innerText = window.currentUser.email.split('@')[0];
+            document.getElementById('user-role-display').innerText = window.currentUser.role;
+
+            // Role-based UI visibility
+            if (window.canSeeSettings()) {
+                document.getElementById('settings-btn').classList.remove('hidden');
+                document.getElementById('settings-btn').classList.add('flex');
+            }
+
+            // CSV Source - Admin only can edit
+            if (!window.canEditCSV()) {
+                document.getElementById('csv-url').disabled = true;
+                document.getElementById('csv-url').classList.add('opacity-60', 'cursor-not-allowed');
+                document.getElementById('csv-admin-note').classList.remove('hidden');
+            }
+
+            // Hide admin role option for non-admins
+            if (window.currentUser.role !== 'admin') {
+                const adminOption = document.getElementById('admin-role-option');
+                if (adminOption) adminOption.remove();
+            }
+
+            // Render settings
+
+            renderUsersList();
+            document.getElementById('csv-url').value = window.dbState.csvUrl;
+            fetchCSVData(true);
+            fetchTargetsCSV(); // Fetch targets directly from CSV
+
+
+            window.addEventListener('db-updated', () => {
+                renderUsersList();
+                fetchCSVData(true);
+            });
+
+            // Close dropdown when clicking outside
+            document.addEventListener('click', function (event) {
+                const dropdown = document.getElementById('source-dropdown-menu');
+                const button = dropdown.previousElementSibling;
+                if (!button.contains(event.target) && !dropdown.contains(event.target)) {
+                    dropdown.classList.add('hidden');
+                }
+            });
+        }
+
+        // ============ LOGIN HANDLERS ============
+        function handleLogin() {
+            const email = document.getElementById('login-email').value;
+            const password = document.getElementById('login-password').value;
+            const errorDiv = document.getElementById('login-error');
+
+            if (!email || !password) {
+                errorDiv.innerText = "Please enter email and password";
+                errorDiv.classList.remove('hidden');
+                return;
+            }
+
+            const result = window.login(email, password);
+            if (result.success) {
+                errorDiv.classList.add('hidden');
+                initializeDashboard();
+            } else {
+                errorDiv.innerText = result.error;
+                errorDiv.classList.remove('hidden');
+            }
+        }
+
+        // ============ PASSWORD MODAL HANDLERS ============
+        let isFirstTimePassword = false;
+
+        function showPasswordModal(isFirstTime) {
+            isFirstTimePassword = isFirstTime;
+            const modal = document.getElementById('password-modal');
+            const title = document.getElementById('password-modal-title');
+            const subtitle = document.getElementById('password-modal-subtitle');
+            const oldPassGroup = document.getElementById('old-password-group');
+            const cancelBtn = document.getElementById('password-cancel-btn');
+
+            if (isFirstTime) {
+                title.innerText = "Set Your Password";
+                subtitle.innerText = "Please create a new password to continue";
+                oldPassGroup.classList.add('hidden');
+                cancelBtn.classList.add('hidden');
+            } else {
+                title.innerText = "Change Password";
+                subtitle.innerText = "Enter your current and new password";
+                oldPassGroup.classList.remove('hidden');
+                cancelBtn.classList.remove('hidden');
+            }
+
+            // Clear fields
+            document.getElementById('old-password').value = '';
+            document.getElementById('new-password').value = '';
+            document.getElementById('confirm-password').value = '';
+            document.getElementById('password-error').classList.add('hidden');
+
+            modal.classList.remove('hidden');
+        }
+
+        function closePasswordModal() {
+            if (isFirstTimePassword) return; // Can't close if first time
+            document.getElementById('password-modal').classList.add('hidden');
+        }
+
+        function handlePasswordChange() {
+            const oldPass = document.getElementById('old-password').value;
+            const newPass = document.getElementById('new-password').value;
+            const confirmPass = document.getElementById('confirm-password').value;
+            const errorDiv = document.getElementById('password-error');
+
+            if (newPass.length < 6) {
+                errorDiv.innerText = "Password must be at least 6 characters";
+                errorDiv.classList.remove('hidden');
+                return;
+            }
+
+            if (newPass !== confirmPass) {
+                errorDiv.innerText = "Passwords do not match";
+                errorDiv.classList.remove('hidden');
+                return;
+            }
+
+            const result = window.changePassword(oldPass, newPass);
+            if (result.success) {
+                document.getElementById('password-modal').classList.add('hidden');
+                window.showToast("Password changed successfully!");
+                if (isFirstTimePassword) {
+                    initializeDashboard();
+                }
+            } else {
+                errorDiv.innerText = result.error;
+                errorDiv.classList.remove('hidden');
+            }
+        }
+
+        function closeModal() {
+            document.getElementById('drilldown-modal').classList.add('hidden');
+            const tc = document.getElementById('modal-table-container');
+            const sc = document.getElementById('modal-summary-container');
+            if (tc) tc.classList.remove('hidden');
+            if (sc) sc.classList.add('hidden');
+        }
+
+        // ============ USER MANAGEMENT HANDLERS ============
+        function renderUsersList() {
+            const container = document.getElementById('users-list');
+            if (!container) return;
+
+            const users = Object.entries(window.usersDB);
+            const myRole = window.currentUser?.role;
+
+            container.innerHTML = users.map(([email, user]) => {
+                const isMe = email === window.currentUser?.email;
+                const canRemove = myRole === 'admin' || (myRole === 'central' && user.role !== 'admin');
+                const canReset = myRole === 'admin';
+
+                const roleColors = {
+                    admin: 'bg-purple-100 text-purple-700',
+                    central: 'bg-blue-100 text-blue-700',
+                    viewer: 'bg-slate-100 text-slate-600'
+                };
+
+                return `
+                    <div class="flex items-center justify-between p-3 bg-slate-50 rounded-xl border ${isMe ? 'border-blue-300' : 'border-slate-100'}">
+                        <div class="flex-1 min-w-0">
+                            <div class="text-xs font-bold text-slate-700 truncate">${email}</div>
+                            <span class="text-[9px] px-2 py-0.5 rounded-full font-bold ${roleColors[user.role]}">${user.role.toUpperCase()}</span>
+                            ${isMe ? '<span class="text-[9px] text-blue-500 font-bold ml-1">(You)</span>' : ''}
+                            ${user.mustChangePassword ? '<span class="text-[9px] text-amber-500 font-bold ml-1">• Must change password</span>' : ''}
+                        </div>
+                        ${!isMe ? `
+                        <div class="flex gap-1">
+                            ${canReset ? `<button onclick="handleResetPassword('${email}')" class="w-7 h-7 rounded-lg bg-amber-50 text-amber-600 hover:bg-amber-100 flex items-center justify-center" title="Reset Password"><i class="fas fa-key text-[10px]"></i></button>` : ''}
+                            ${canRemove ? `<button onclick="handleRemoveUser('${email}')" class="w-7 h-7 rounded-lg bg-red-50 text-red-500 hover:bg-red-100 flex items-center justify-center" title="Remove User"><i class="fas fa-trash text-[10px]"></i></button>` : ''}
+                        </div>
+                        ` : ''}
+                    </div>
+                `;
+            }).join('');
+        }
+
+        function handleAddUser() {
+            const email = document.getElementById('new-user-email').value.trim();
+            const role = document.getElementById('new-user-role').value;
+            const tempPass = document.getElementById('new-user-temp-pass').value || 'temp123';
+
+            if (!email) {
+                window.showToast("Please enter an email");
+                return;
+            }
+
+            const result = window.addUser(email, role, tempPass);
+            if (result.success) {
+                window.showToast(`User added! Temp password: ${tempPass}`);
+                document.getElementById('new-user-email').value = '';
+                document.getElementById('new-user-temp-pass').value = '';
+                renderUsersList();
+            } else {
+                window.showToast(result.error);
+            }
+        }
+
+        function handleRemoveUser(email) {
+            if (!confirm(`Remove user ${email}?`)) return;
+            const result = window.removeUser(email);
+            if (result.success) {
+                window.showToast("User removed");
+                renderUsersList();
+            } else {
+                window.showToast(result.error);
+            }
+        }
+
+        function handleResetPassword(email) {
+            const newPass = prompt(`Enter new temporary password for ${email}:`, 'reset123');
+            if (!newPass) return;
+
+            const result = window.resetUserPassword(email, newPass);
+            if (result.success) {
+                window.showToast(`Password reset! Temp: ${newPass}`);
+                renderUsersList();
+            } else {
+                window.showToast(result.error);
+            }
+        }
+
+        // Toggle dropdown visibility
+        function toggleSourceDropdown(event) {
+            event.stopPropagation();
+            const menu = document.getElementById('source-dropdown-menu');
+            menu.classList.toggle('hidden');
+        }
+
+        // ... existing auth functions ...
+        // ... existing auth functions ...
+
+        // Helper to get all available months (from Data + stored Targets + Next Month)
+        function getAllTargetMonths() {
+            const months = new Set();
+            // 1. From Data
+            if (window.rawData) {
+                window.rawData.forEach(r => { if (r[1]) months.add(r[1].trim()); });
+            }
+            // 2. From Targets
+            if (window.dbState.targets) Object.keys(window.dbState.targets).forEach(m => months.add(m));
+            if (window.dbState.dtTargets) Object.keys(window.dbState.dtTargets).forEach(m => months.add(m));
+
+            // To support "Next Month" before data exists, we can technically add it manually via prompt,
+            // but let's at least ensure the "latest" month from value is there.
+
+            return Array.from(months).sort((a, b) => parseMonth(b) - parseMonth(a)); // Descending
+        }
+
+        function promptNewMonth() {
+            const m = prompt("Enter new Month (e.g., 'Feb 2026'):");
+            if (m) {
+                // Determine if valid format? For now just trust user or basic check
+                if (!m.includes(' ')) { alert("Format: 'Month Year' (e.g., Jan 2026)"); return; }
+                // Add a dummy entry to force it into existence? 
+                // We'll just select it in the dropdown if we re-render, but it needs to exist in "months" set logic.
+                // We can temporarily force it by adding empty target object
+                if (!window.dbState.targets[m]) window.dbState.targets[m] = {};
+                renderTargetSettings(m);
+            }
+        }
+
+        // PERMISSION FIX: Allow Admin AND Central to edit targets
+        window.canEditTargets = function () {
+            return window.currentUser && (window.currentUser.role === 'admin' || window.currentUser.role === 'central');
+        };
+
+
+
+        function showDemandDrillDown(prod, mktKey) {
+            const modal = document.getElementById('drilldown-modal');
+            const title = document.getElementById('modal-title');
+            const summaryContainer = document.getElementById('modal-summary-container');
+            const tableContainer = document.getElementById('modal-table-container');
+
+            const isCustTarget = mktKey.includes('::');
+            const [mkt, cust] = isCustTarget ? mktKey.split('::') : [mktKey, null];
+
+            title.innerHTML = `${prod} <span class="text-slate-300">/</span> ${mkt} ${cust ? `<span class="text-slate-300">/</span> ${cust}` : ''} <span class="text-slate-400 text-[10px] ml-2 font-normal">Customer Breakdown (Closed Only)</span>`;
+
+            // Toggle Views
+            tableContainer.classList.add('hidden');
+            summaryContainer.classList.remove('hidden');
+            summaryContainer.innerHTML = ''; // Clear previous
+
+            // Filter Transactions
+            // Use window.allDTTransactions which already has fields: market, product, sales, margin, customer, isClosed
+            // Filter: Product, Market, Closed=True
+            let txs = window.allDTTransactions.filter(t => t.product === prod && t.market === mkt && t.isClosed);
+            if (cust) {
+                txs = txs.filter(t => t.customer === cust);
+            }
+
+            // Aggregate by Customer
+            const custStats = {};
+            let tS = 0, tM = 0;
+
+            txs.forEach(t => {
+                if (!custStats[t.customer]) custStats[t.customer] = { s: 0, m: 0 };
+                custStats[t.customer].s += t.sales;
+                custStats[t.customer].m += t.margin;
+                tS += t.sales;
+                tM += t.margin;
+            });
+
+            // Get Targets (Market & Customer)
+            const month = document.getElementById('month-filter').value;
+            const db = window.dbState.dtTargets;
+
+            // Render Table
+            summaryContainer.innerHTML = `
+                <table class="w-full text-left">
+                    <thead class="bg-slate-50 text-[10px] font-bold text-slate-500 uppercase">
+                        <tr>
+                            <th class="p-3">Customer</th>
+                            <th class="p-3 text-right">Sales</th>
+                            <th class="p-3 text-right">Margin</th>
+                            <th class="p-3 text-right">Yield</th>
+                            <th class="p-3 text-right">Target Status</th>
+                        </tr>
+                    </thead>
+                    <tbody class="divide-y divide-slate-100 text-xs text-slate-700">
+                        ${Object.entries(custStats).sort((a, b) => b[1].s - a[1].s).map(([c, d]) => {
+                const yieldPct = d.s ? (d.m / d.s * 100) : 0;
+
+                // Customer Target
+                let cTarget = null;
+                if (db && db[month]) {
+                    if (prod === 'KP Trades') {
+                        // For KP Trades, search across all products (except Pomegranate) where Type='Known Party'
+                        Object.keys(db[month]).forEach(product => {
+                            if (product === 'Pomegranate') return;
+
+                            const customerKey = `${mkt}::${c}`;
+                            if (db[month][product][customerKey]) {
+                                const target = db[month][product][customerKey];
+                                if (target.type && target.type.toLowerCase().includes('known')) {
+                                    // Found matching customer target
+                                    if (!cTarget) {
+                                        cTarget = { sales: 0, margin: 0 };
+                                    }
+                                    cTarget.sales += target.sales || 0;
+                                    cTarget.margin += target.margin || 0;
+                                }
+                            }
+                        });
+                    } else if (db[month][prod]) {
+                        cTarget = db[month][prod][`${mkt}::${c}`];
+                    }
+                }
+
+                let targetHtml = '<span class="text-slate-300">-</span>';
+                if (cTarget) {
+                    const goal = cTarget.sales; // CSV contains actual rupee value, no multiplication needed
+                    const pct = goal ? Math.min((d.s / goal) * 100, 100) : 0;
+                    targetHtml = `
+                                    <div class="w-28 ml-auto">
+                                        <div class="flex justify-between items-baseline text-[9px] mb-1">
+                                            <span class="font-bold ${pct >= 100 ? 'text-emerald-600' : 'text-blue-600'}">${Math.round(pct)}%</span>
+                                            <span class="text-slate-500 font-medium">${formatLakhsCrores(goal)}</span>
+                                        </div>
+                                        <div class="h-1.5 bg-slate-100 rounded-full"><div class="h-full bg-blue-500 rounded-full" style="width:${pct}%"></div></div>
+                                    </div>
+                                `;
+                }
+
+                return `
+                                <tr class="hover:bg-slate-50">
+                                    <td class="p-3 font-bold">${c}</td>
+                                    <td class="p-3 text-right font-bold">${compactRupee.format(d.s)}</td>
+                                    <td class="p-3 text-right font-bold text-emerald-600">${compactRupee.format(d.m)}</td>
+                                    <td class="p-3 text-right">${yieldPct.toFixed(1)}%</td>
+                                    <td class="p-3 text-right">${targetHtml}</td>
+                                </tr>
+                            `;
+            }).join('')}
+                    </tbody>
+                    <tfoot class="bg-slate-50 font-bold text-xs">
+                         <tr>
+                            <td class="p-3">TOTAL</td>
+                            <td class="p-3 text-right">${compactRupee.format(tS)}</td>
+                            <td class="p-3 text-right text-emerald-600">${compactRupee.format(tM)}</td>
+                            <td class="p-3 text-right">${tS ? (tM / tS * 100).toFixed(1) : 0}%</td>
+                            <td class="p-3"></td>
+                         </tr>
+                    </tfoot>
+                </table>
+            `;
+
+            modal.classList.remove('hidden');
+        }
+
+
+
+
+
+        // Add Listener for Customer Input to disable Margin
+        document.addEventListener('DOMContentLoaded', () => {
+            const custInput = document.getElementById('new-dt-customer');
+            const marginInput = document.getElementById('new-dt-margin');
+            if (custInput && marginInput) {
+                custInput.addEventListener('input', function () {
+                    if (this.value.trim().length > 0) {
+                        marginInput.value = '';
+                        marginInput.disabled = true;
+                        marginInput.placeholder = "N/A for Customer";
+                        marginInput.classList.add('bg-slate-100');
+                    } else {
+                        marginInput.disabled = false;
+                        marginInput.placeholder = "0";
+                        marginInput.classList.remove('bg-slate-100');
+                    }
+                });
+            }
+        });
+
+
+
+        async function updateGlobalPrice(val) {
+            window.dbState.estPricePerBox = parseFloat(val) || 0;
+            filterAndRender();
+            if (window.saveToCloud) window.saveToCloud('Settings', { estPricePerBox: window.dbState.estPricePerBox });
+        }
+
+        async function saveAndRefresh() {
+            const url = document.getElementById('csv-url') ? document.getElementById('csv-url').value.trim() : window.dbState.csvUrl;
+            if (window.canEditCSV()) window.dbState.csvUrl = url;
+
+            if (window.saveToCloud) {
+                // Targets are now Read-Only (Managed via Sheet) -> DO NOT SAVE BACK
+                // window.saveToCloud('Targets', { targets: window.dbState.targets });
+                // window.saveToCloud('DT_Targets', { dtTargets: window.dbState.dtTargets });
+                if (window.dbState.estPricePerBox) window.saveToCloud('Settings', { estPricePerBox: window.dbState.estPricePerBox });
+            }
+            toggleConfig();
+            fetchCSVData(true);
+        }
+        function toggleConfig() {
+            document.getElementById('config-sidebar').classList.toggle('translate-x-full');
+            if (!document.getElementById('config-sidebar').classList.contains('translate-x-full')) {
+                renderUsersList();
+                // renderTargetSettings(); // Removed (UI gone)
+            }
+        }
+        window.showToast = (msg) => { const t = document.getElementById('toast'); t.innerText = msg; t.classList.add('show'); setTimeout(() => t.classList.remove('show'), 3000); };
+        function copyShareLink() {
+            if (window.location.protocol === 'file:' || window.location.protocol === 'blob:') return window.showToast("Host file to share link.");
+            const url = `${window.location.href.split('?')[0]}?mode=viewer`;
+            navigator.clipboard.writeText(url).then(() => window.showToast("Link Copied!"));
+        }
+        function manualRefresh() { fetchCSVData(true); }
+
+        // MODAL LOGIC
+        function showDrillDown(owner) {
+            const modal = document.getElementById('drilldown-modal');
+            const title = document.getElementById('modal-title');
+            const body = document.getElementById('modal-body');
+
+            title.innerText = owner + " - Trade Breakdown";
+
+            document.getElementById('modal-table-container').classList.remove('hidden');
+            document.getElementById('modal-summary-container').classList.add('hidden');
+
+            // Filter raw data (No Date Filter - All data passes)
+            // Use current global filter
+            const monthFilter = document.getElementById('month-filter').value;
+            let currentData = window.rawData;
+            if (monthFilter !== 'All') {
+                currentData = window.rawData.filter(r => r[1]?.trim() === monthFilter);
+            }
+
+            const filteredRows = currentData.filter(row => {
+                const rowOwner = getOwner(row);
+                return rowOwner === owner;
+            });
+
+            body.innerHTML = filteredRows.length ? '' : '<tr><td colspan="6" class="p-4 text-center text-slate-400">No records found.</td></tr>';
+
+            filteredRows.forEach(row => {
+                const closureDate = row[1] || '-';
+                const dispatchDate = row[0] || '-';
+                const cust = row[2] || 'Unknown';
+                const mark = row[10] || '-';
+                const boxes = parseFloat(row[6]?.replace(/[^\d.-]/g, '')) || 0;
+                const sales = parseFloat(row[8]?.replace(/[^\d.-]/g, '')) || 0;
+                const margin = parseFloat(row[9]?.replace(/[^\d.-]/g, '')) || 0;
+
+                body.insertAdjacentHTML('beforeend', `
+                    <tr class="hover:bg-slate-50">
+                        <td class="p-3 border-b">${closureDate}</td>
+                        <td class="p-3 border-b text-slate-400">${dispatchDate}</td>
+                        <td class="p-3 border-b font-bold">${cust}</td>
+                        <td class="p-3 border-b text-slate-500">${mark}</td>
+                        <td class="p-3 border-b text-right">${boxes.toLocaleString()}</td>
+                        <td class="p-3 border-b text-right text-blue-600">${standardRupee.format(sales)}</td>
+                        <td class="p-3 border-b text-right ${margin >= 0 ? 'text-emerald-600' : 'text-red-500'}">${standardRupee.format(margin)}</td>
+                    </tr>
+                `);
+            });
+
+            modal.classList.remove('hidden');
+        }
+
+        function closeModal() {
+            document.getElementById('drilldown-modal').classList.add('hidden');
+        }
+
+        function getOwner(row) {
+            const mode = row[4]?.trim().toLowerCase() || "";
+            const mark = row[10]?.trim() || "";
+            const market = row[11]?.trim() || "";
+            const isKnown = mode.includes("known") || (row[5] && row[5].toLowerCase().includes("known"));
+
+            // 1. GLOBAL EXCLUSION: POMO NW / E variants
+            // These are hidden from the matrix completely (marked as EXCLUDED)
+            // regardless of whether they are Known Party or Trade.
+            if (mark.toUpperCase().includes("POMO")) {
+                const mUp = mark.toUpperCase().replace(/\s+/g, ''); // Remove spaces for comparison
+                // Matches variants of: NW, E, NW&E
+                if (mUp.includes("NW") || mUp.includes("&E") || mUp.endsWith("E") || mUp === "POMOE") {
+                    return "EXCLUDED";
+                }
+            }
+
+            // 2. Known Party Logic (Central / Kishore)
+            if (mark === "Mango" || (mark === "Apple" && isKnown)) return "Central (Known Party)";
+            if (mark.includes("POMO") && isKnown) return "Kishore (Known Party)";
+
+            // 3. Specific Marks
+            if (mark === "Apple") return "Amit / Bharath";
+            if (mark === "Kinnow") return "Amit";
+
+            // 4. Remaining POMO Logic (Karan / Kishore)
+            if (mark.includes("POMO")) {
+                if (market === "Rajasthan" || market === "Gujarat") return "Karan";
+                return "Kishore";
+            }
+
+            // 5. Catch-all
+            return mark || "Others";
+        }
+
+        async function fetchCSVData(isBackground) {
+            const url = window.dbState.csvUrl;
+            console.log("Fetching from URL:", url);
+            if (!url) return;
+            const icon = document.getElementById('nav-sync-icon');
+            if (icon) icon.classList.add('fa-spin');
+
+            const tryFetch = async (fetchUrl) => {
+                const controller = new AbortController();
+                const id = setTimeout(() => controller.abort(), 10000);
+                try {
+                    const res = await fetch(fetchUrl, { signal: controller.signal });
+                    clearTimeout(id);
+                    if (!res.ok) throw new Error("HTTP " + res.status);
+                    return await res.text();
+                } catch (e) {
+                    clearTimeout(id);
+                    throw e;
+                }
+            };
+
+            try {
+                let fetchUrl = url;
+                if ((url.includes('/edit') || url.includes('usp=sharing')) && !url.includes('export?format=csv')) {
+                    fetchUrl = url.split('/edit')[0] + '/export?format=csv';
+                }
+
+                let text;
+                try {
+                    updateStatus('Connecting...', 'bg-slate-300');
+                    const finalFetchUrl = fetchUrl + (fetchUrl.includes('?') ? '&' : '?') + 'cb=' + Date.now();
+                    text = await tryFetch(finalFetchUrl);
+                } catch (e1) {
+                    try {
+                        updateStatus('Using Proxy 1...', 'bg-yellow-400');
+                        const proxyUrl1 = 'https://corsproxy.io/?' + encodeURIComponent(fetchUrl);
+                        text = await tryFetch(proxyUrl1);
+                    } catch (e2) {
+                        updateStatus('Using Proxy 2...', 'bg-orange-400');
+                        const proxyUrl2 = 'https://api.allorigins.win/raw?url=' + encodeURIComponent(fetchUrl);
+                        text = await tryFetch(proxyUrl2);
+                    }
+                }
+
+                if (!text || text.trim().toLowerCase().startsWith('<!doctype')) {
+                    throw new Error("Invalid Data Received (Not CSV)");
+                }
+
+                const rows = parseCSV(text).slice(1).filter(r => {
+                    if (!r || r.length <= 10) return false;
+                    return r[0] || r[2] || r[6] || r[8] || r[10];
+                });
+
+                if (rows.length > 0) {
+                    window.rawData = rows;
+                    populateMonthFilter(rows);
+                    filterAndRender();
+                    updateStatus('Cloud Synced', 'bg-emerald-500');
+                    document.getElementById('empty-state').classList.add('hidden');
+                    document.getElementById('last-sync-time').innerText = `Synced ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
+                    document.getElementById('global-est-price').value = window.dbState.estPricePerBox || 1000;
+                } else {
+                    throw new Error("CSV appears empty");
+                }
+            } catch (e) {
+                console.error("All sync methods failed", e);
+                updateStatus('Sync Failed', 'bg-red-500');
+                if (!isBackground) window.showToast("Sync Error: " + e.message);
+            } finally { if (icon) icon.classList.remove('fa-spin'); }
+        }
+
+        // NEW: Fetch Targets from Public CSV (Side-by-Side Tables)
+        async function fetchTargetsCSV() {
+            try {
+                console.log("Fetching Targets CSV...");
+                let text = "";
+
+                // 1. Try Direct Fetch
+                try {
+                    const res = await fetch(TARGETS_CSV_URL);
+                    if (!res.ok) throw new Error("Direct fetch failed");
+                    text = await res.text();
+                } catch (errDirect) {
+                    console.warn("Direct fetch failed, trying CORS proxy...", errDirect);
+                    // 2. Try CORS Proxy
+                    const proxyUrl = "https://corsproxy.io/?" + encodeURIComponent(TARGETS_CSV_URL);
+                    const resProxy = await fetch(proxyUrl);
+                    if (!resProxy.ok) throw new Error("Proxy fetch failed");
+                    text = await resProxy.text();
+                }
+
+                const rows = parseCSV(text);
+                const newTargets = {};
+                const newDtTargets = {};
+
+                // Helper: Normalize Date strings
+                const normalizeMonth = (mStr) => {
+                    if (!mStr) return "";
+                    // Plain Text "Jan 2026" -> "January"
+                    const m = mStr.trim();
+                    if (/\d{4}/.test(m)) {
+                        const d = new Date(Date.parse(m.replace(/(\d{4})/, "1, $1")));
+                        if (!isNaN(d)) return d.toLocaleString('en-US', { month: 'long' });
+                    }
+                    return m;
+                };
+
+                // Skip Header (Row 0)
+                for (let i = 1; i < rows.length; i++) {
+                    const row = rows[i];
+                    if (!row || row.length < 5) continue;
+
+                    // --- 1. OWNERSHIP TARGETS (Cols A-E / 0-4) ---
+                    const rawOmMonth = row[0]?.trim();
+                    const omMonth = normalizeMonth(rawOmMonth);
+                    const omOwner = row[1]?.trim();
+
+                    if (omMonth && omOwner) {
+                        if (!newTargets[omMonth]) newTargets[omMonth] = {};
+                        const cleanNum = (v) => parseFloat(String(v).replace(/[^0-9.-]/g, '')) || 0;
+                        newTargets[omMonth][omOwner] = {
+                            sales: cleanNum(row[2]),
+                            margin: cleanNum(row[3]),
+                            marginPct: cleanNum(row[4])
+                        };
+                    }
+
+                    // --- 2. DEMAND TARGETS (Cols G-L / 6-11) ---
+                    if (row.length >= 12) {
+                        const rawDtMonth = row[6]?.trim();
+                        const dtMonth = normalizeMonth(rawDtMonth);
+                        let dtProd = row[7]?.trim();
+                        const dtMkt = row[8]?.trim();
+
+                        if (dtMonth && dtProd && dtMkt) {
+                            const dtCust = row[9]?.trim();
+                            const dtType = row[10]?.trim();
+                            const dtSales = row[11];
+
+                            // Normalization
+                            if (dtProd.toLowerCase() === 'pomegranates') dtProd = 'Pomegranate';
+                            if (dtProd.toLowerCase().includes('shimla')) dtProd = 'CA - Shimla Apples';
+
+                            const cleanNum = (v) => parseFloat(String(v).replace(/[^0-9.-]/g, '')) || 0;
+
+                            if (!newDtTargets[dtMonth]) newDtTargets[dtMonth] = {};
+                            if (!newDtTargets[dtMonth][dtProd]) newDtTargets[dtMonth][dtProd] = {};
+
+                            // Use customer if available, otherwise use row index to prevent duplicate market overwrites
+                            const key = dtCust ? `${dtMkt}::${dtCust}` : `${dtMkt}::_row${i}`;
+
+                            newDtTargets[dtMonth][dtProd][key] = {
+                                sales: cleanNum(dtSales),
+                                margin: 0,
+                                type: dtType
+                            };
+                        }
+                    }
+                }
+
+                if (Object.keys(newTargets).length > 0) window.dbState.targets = newTargets;
+                if (Object.keys(newDtTargets).length > 0) window.dbState.dtTargets = newDtTargets;
+
+                console.log("Targets Loaded (CSV+Normal):", Object.keys(newTargets));
+                localStorage.setItem('fruitsDashboardState', JSON.stringify(window.dbState));
+                window.dispatchEvent(new CustomEvent('db-updated'));
+                // window.showToast("Targets Synced!");
+
+            } catch (e) {
+                console.error("Error fetching Targets CSV:", e);
+                window.showToast("Target Sync Error: " + e.message);
+            }
+        }
+
+
+        function parseCSV(text) {
+            return text.split(/\r?\n/).map(l => {
+                const res = []; let cell = '', q = false;
+                for (let c of l) {
+                    if (c === '"') { if (q && l[l.indexOf(c) + 1] === '"') cell += '"'; else q = !q; }
+                    else if (c === ',' && !q) { res.push(cell.trim()); cell = ''; } else cell += c;
+                }
+                res.push(cell.trim()); return res;
+            });
+        }
+
+        function updateStatus(text, color) {
+            const tag = document.getElementById('status-tag');
+            tag.innerHTML = `<span class="w-1.5 h-1.5 rounded-full ${color}"></span> ${text}`;
+            tag.className = `text-[9px] font-bold uppercase flex items-center gap-1.5 ${color.replace('bg-', 'text-')}`;
+        }
+
+        function parseMonth(mStr) {
+            let d = new Date("1 " + mStr);
+            if (isNaN(d.getTime())) return 0;
+
+            // If string doesn't have a year (4 digits), apply heuristic
+            if (!/\d{4}/.test(mStr)) {
+                const now = new Date();
+                const currentMonth = now.getMonth();
+                const parsedMonth = d.getMonth();
+                const currentYear = now.getFullYear();
+
+                d.setFullYear(currentYear);
+                // If the month is seemingly in the future (e.g. Dec while we are in Feb), assume it's last year
+                if (parsedMonth > currentMonth) {
+                    d.setFullYear(currentYear - 1);
+                }
+            }
+            return d.getTime();
+        }
+
+        function populateMonthFilter(rows) {
+            const filter = document.getElementById('month-filter');
+            const currentSelection = filter.value;
+            const months = new Set();
+
+            rows.forEach(r => {
+                const m = r[1]?.trim();
+                if (m) months.add(m);
+            });
+
+            const sortedMonths = Array.from(months).sort((a, b) => {
+                const dateA = parseMonth(a);
+                const dateB = parseMonth(b);
+                return dateB - dateA; // Descending (Newest first)
+            });
+
+            filter.innerHTML = '<option value="All">All Months</option>';
+            sortedMonths.forEach(m => {
+                const opt = document.createElement('option');
+                opt.value = m;
+                opt.text = m;
+                filter.appendChild(opt);
+            });
+
+            // Smart Default Logic: Prioritize Current Month
+            if (!window.monthFilterInitialized && sortedMonths.length > 0) {
+                const now = new Date();
+                const currentMonthLong = now.toLocaleString('en-US', { month: 'long' }); // "January"
+                const currentMonthShort = now.toLocaleString('en-US', { month: 'short' }); // "Jan"
+
+                // Find matching month (prioritize latest year if duplicates exist due to sorting)
+                const currentMatch = sortedMonths.find(m => {
+                    const lowerM = m.toLowerCase();
+                    return lowerM.includes(currentMonthLong.toLowerCase()) ||
+                        lowerM.includes(currentMonthShort.toLowerCase());
+                });
+
+                if (currentMatch) {
+                    filter.value = currentMatch;
+                } else {
+                    filter.value = sortedMonths[0]; // Fallback to latest if current not found
+                }
+                window.monthFilterInitialized = true;
+            } else if (months.has(currentSelection)) {
+                filter.value = currentSelection;
+            }
+        }
+
+        function filterAndRender() {
+            const filter = document.getElementById('month-filter');
+            const val = filter.value;
+
+            let data = window.rawData;
+            if (val !== 'All') {
+                data = window.rawData.filter(r => r[1]?.trim() === val);
+            }
+            renderDashboard(data);
+        }
+
+        function parseDate(dateStr) {
+            if (!dateStr) return null;
+            dateStr = dateStr.trim();
+            const parts = dateStr.split(/[\s,./-]+/).filter(Boolean);
+            const months = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
+            let day, month, year;
+
+            if (parts.length === 2) {
+                day = parseInt(parts[0], 10);
+                const mStr = parts[1].replace(/[^a-zA-Z]/g, '').toLowerCase().substring(0, 3);
+                month = months[mStr];
+                year = new Date().getFullYear();
+            }
+            else if (parts.length >= 3) {
+                day = parseInt(parts[0], 10);
+                const monthPart = parts[1];
+                let yPart = parseInt(parts[2], 10);
+                if (yPart < 100) yPart += 2000;
+                year = yPart;
+                if (isNaN(monthPart)) {
+                    const mStr = monthPart.replace(/[^a-zA-Z]/g, '').toLowerCase().substring(0, 3);
+                    month = months[mStr];
+                } else {
+                    month = parseInt(monthPart, 10) - 1;
+                }
+            }
+
+            if (!isNaN(day) && month !== undefined && month >= 0 && !isNaN(year)) {
+                return new Date(year, month, day);
+            }
+            const d = new Date(dateStr);
+            return isNaN(d.getTime()) ? null : d;
+        }
+
+        // New function to handle Source Chart updates
+        function updateSourceChart() {
+            // Select only the source checkboxes, ignoring the "Select All" one
+            const checkedBoxes = document.querySelectorAll('#source-dropdown-menu input[type="checkbox"]:not(#source-select-all):checked');
+            const selectedOptions = Array.from(checkedBoxes).map(cb => cb.value);
+            const totalBoxes = document.querySelectorAll('#source-dropdown-menu input[type="checkbox"]:not(#source-select-all)').length;
+
+            // Update Label
+            const labelSpan = document.getElementById('source-filter-label');
+            if (selectedOptions.length === 0) {
+                labelSpan.innerText = "Select Source";
+            } else if (selectedOptions.length === totalBoxes) {
+                labelSpan.innerText = "All Sources";
+            } else if (selectedOptions.length === 1) {
+                labelSpan.innerText = selectedOptions[0];
+            } else {
+                labelSpan.innerText = `${selectedOptions.length} Selected`;
+            }
+
+            // Filter transactions
+            const filteredTransactions = allClosedTransactions.filter(t => selectedOptions.includes(t.source));
+
+            // Aggregate by Date
+            const dailySales = {};
+            filteredTransactions.forEach(t => {
+                const dateKey = `${t.date.getFullYear()}-${String(t.date.getMonth() + 1).padStart(2, '0')}-${String(t.date.getDate()).padStart(2, '0')}`;
+                dailySales[dateKey] = (dailySales[dateKey] || 0) + t.sales;
+            });
+
+            // Prepare chart data
+            const dates = Object.keys(dailySales).sort();
+            const displayDates = dates.map(d => {
+                const date = new Date(d);
+                return date.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
+            });
+
+            let runningTotal = 0;
+            const cumulativeData = dates.map(d => {
+                runningTotal += dailySales[d];
+                return runningTotal;
+            });
+
+            // Destroy old chart
+            if (sourceChart) sourceChart.destroy();
+
+            // Render new chart
+            sourceChart = new Chart(document.getElementById('sourceChart'), {
+                type: 'line',
+                data: {
+                    labels: displayDates,
+                    datasets: [{
+                        label: 'Cumulative Closed GMV',
+                        data: cumulativeData,
+                        borderColor: '#8b5cf6', // Violet color
+                        backgroundColor: 'rgba(139, 92, 246, 0.15)',
+                        fill: 'origin',
+                        tension: 0.4,
+                        pointRadius: 2,
+                        pointHoverRadius: 4
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: { display: false },
+                        tooltip: {
+                            callbacks: {
+                                label: (ctx) => ` ₹${compactRupee.format(ctx.raw)}`
+                            }
+                        }
+                    },
+                    scales: {
+                        x: {
+                            grid: { display: false },
+                            ticks: { maxTicksLimit: 10, font: { size: 9 } }
+                        },
+                        y: {
+                            beginAtZero: true,
+                            grid: { display: false },
+                            ticks: {
+                                callback: (val) => compactRupee.format(val),
+                                font: { size: 9 }
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        function renderDispatchChart(rows) {
+            const clean = v => parseFloat(v?.replace(/[^\d.-]/g, '')) || 0;
+            const dispatchMap = {}; // DateStr -> { KaranOM, KaranCM, KishoreOM, KishoreCM }
+            let maxDate = null;
+
+            rows.forEach(row => {
+                let ownerStr = getOwner(row);
+                // Allow "Kishore (Known Party)" and "Karan (Known Party)"
+                let manager = "";
+                if (ownerStr.includes("Kishore")) manager = "Kishore";
+                else if (ownerStr.includes("Karan")) manager = "Karan";
+
+                if (!manager) return;
+
+                const mark = (row[10] || "").toUpperCase();
+                if (!mark.includes("POMO")) return;
+
+                const isOM = mark.endsWith("OM");
+                const isCM = mark.endsWith("CM");
+                if (!isOM && !isCM) return;
+
+                // Use dispatch date (row[0])
+                const d = parseDate(row[0]);
+                if (!d) return;
+
+                if (!maxDate || d > maxDate) maxDate = d;
+
+                // Fix timezone bug: using local date string instead of toISOString()
+                const dateKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+                if (!dispatchMap[dateKey]) {
+                    dispatchMap[dateKey] = { KaranOM: 0, KaranCM: 0, KishoreOM: 0, KishoreCM: 0 };
+                }
+
+                const boxes = clean(row[6]);
+                const key = manager + (isOM ? "OM" : "CM");
+                dispatchMap[dateKey][key] += boxes;
+            });
+
+            if (!maxDate) {
+                if (dispatchChart) dispatchChart.destroy();
+                return;
+            }
+
+            // Generate last 7 days range
+            const last7Days = [];
+            for (let i = 6; i >= 0; i--) {
+                const day = new Date(maxDate);
+                day.setDate(day.getDate() - i);
+                const dKey = `${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, '0')}-${String(day.getDate()).padStart(2, '0')}`;
+                last7Days.push(dKey);
+            }
+
+            const labels = last7Days.map(d => {
+                const date = new Date(d);
+                return date.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
+            });
+
+            const datasets = [
+                { label: 'Karan OM', data: last7Days.map(d => dispatchMap[d]?.KaranOM || 0), backgroundColor: '#3b82f6', stack: 'Karan' },
+                { label: 'Karan CM', data: last7Days.map(d => dispatchMap[d]?.KaranCM || 0), backgroundColor: '#93c5fd', stack: 'Karan' },
+                { label: 'Kishore OM', data: last7Days.map(d => dispatchMap[d]?.KishoreOM || 0), backgroundColor: '#10b981', stack: 'Kishore' },
+                { label: 'Kishore CM', data: last7Days.map(d => dispatchMap[d]?.KishoreCM || 0), backgroundColor: '#6ee7b7', stack: 'Kishore' }
+            ];
+
+            if (dispatchChart) dispatchChart.destroy();
+
+            dispatchChart = new Chart(document.getElementById('dispatchChart'), {
+                type: 'bar',
+                data: { labels, datasets },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: { display: false },
+                        tooltip: {
+                            mode: 'index',
+                            intersect: false,
+                            callbacks: {
+                                label: (ctx) => {
+                                    const label = ctx.dataset.label || '';
+                                    const val = ctx.raw || 0;
+                                    const stackTotal = ctx.chart.data.datasets
+                                        .filter(ds => ds.stack === ctx.dataset.stack)
+                                        .reduce((sum, ds) => sum + ds.data[ctx.dataIndex], 0);
+                                    return ` ${label}: ${val.toLocaleString()} (Total: ${stackTotal.toLocaleString()})`;
+                                }
+                            }
+                        }
+                    },
+                    scales: {
+                        x: { stacked: false, grid: { display: false }, ticks: { font: { size: 9 } } },
+                        y: { beginAtZero: true, grid: { color: '#f1f5f9' }, ticks: { font: { size: 9 } } }
+                    }
+                }
+            });
+        }
+
+        function renderDashboard(rows) {
+            let tS = 0, tM = 0, tP = 0, tVol = 0, tOpenBox = 0, tClosedS = 0;
+            const groups = {}, custs = {}, sourceMarkets = {}, corridors = {};
+            const demandMatrix = {}; // Product -> Market -> {s, m, vol}
+            const dateFilter = document.getElementById('month-filter').value;
+            const dailySales = {}; // Date -> Sales
+            const clean = v => parseFloat(v?.replace(/[^\d.-]/g, '')) || 0;
+
+            // Clear previous raw data
+            allClosedTransactions = [];
+            window.allDTTransactions = [];
+            const uniqueSources = new Set();
+
+            rows.forEach(row => {
+                const status = row[5]?.trim().toLowerCase() || "";
+                const s = clean(row[8]), m = clean(row[9]), p = clean(row[7]), b = clean(row[6]);
+                const owner = getOwner(row);
+                const mode = row[4]?.trim().toLowerCase() || ""; // Column E is Mode (Index 4)
+
+                // ALWAYS add to global totals (Sales/Margin might be filtered in specific views, but raw totals useful)
+                // Actually, let's keep tS/tM as ALL for now if used elsewhere, BUT user asked for "Closed Only" in matrices.
+                // The top cards use tClosedS (MTD Sales) which is correct.
+                tS += s; tM += m; tP += p; tVol += b;
+
+                // Matrix Grouping: SKIP if EXCLUDED
+                if (owner !== "EXCLUDED") {
+                    if (!groups[owner]) groups[owner] = { s: 0, m: 0, openBox: 0, closedBox: 0, closedS: 0 };
+
+                    // Sales/Margin: ONLY CLOSED TRADES (User Request)
+                    if (status === 'closed') {
+                        groups[owner].s += s;
+                        groups[owner].m += m;
+                    }
+                    // Box counts track both
+                }
+
+                const source = row[11]?.trim() || "Unknown";
+
+                if (status === 'closed') {
+                    // Global Closed Sales
+                    tClosedS += s;
+
+                    // Matrix Closed Stats
+                    if (owner !== "EXCLUDED") {
+                        groups[owner].closedBox += b;
+                        groups[owner].closedS += s;
+                    }
+
+                    // Parse Date for charts (Global)
+                    const closeDate = parseDate(row[12]);
+                    if (closeDate) {
+                        const dateKey = `${closeDate.getFullYear()}-${String(closeDate.getMonth() + 1).padStart(2, '0')}-${String(closeDate.getDate()).padStart(2, '0')}`;
+                        dailySales[dateKey] = (dailySales[dateKey] || 0) + s;
+
+                        // Store for Source Chart
+                        allClosedTransactions.push({
+                            date: closeDate,
+                            sales: s,
+                            source: source
+                        });
+                        uniqueSources.add(source);
+                    }
+
+                    // Source Market Logic (Col L is Index 11) - ONLY CLOSED BOXES
+                    if (!sourceMarkets[source]) sourceMarkets[source] = { s: 0, b: 0 };
+                    sourceMarkets[source].s += s;
+                    sourceMarkets[source].b += b;
+
+                } else {
+                    // Global Open Totals
+                    tOpenBox += b;
+
+                    // Matrix Open Stats
+                    if (owner !== "EXCLUDED") {
+                        groups[owner].openBox += b;
+                    }
+                }
+
+                // Customers (Closed Only for Consistency?)
+                const cust = row[2]?.trim() || "Unknown";
+                if (status === 'closed') {
+                    if (!custs[cust]) custs[cust] = { s: 0, m: 0 }; custs[cust].s += s; custs[cust].m += m;
+                }
+
+                // Trade Corridor Logic (Closed Only for Consistency?)
+                // User said "It should be same logic for both...". Let's apply Closed Only generally for Matrix/Analysis views.
+                let dtMarket = row[3]?.trim() || "Unknown";
+                const dest = row[3]?.trim() || "Unknown";
+
+                // Aggregating for DT Market Section (Dynamic Product Filter)
+                const rawMark = row[10]?.trim() || "Unknown";
+                let product = rawMark;
+                if (rawMark.toUpperCase().includes("POMO")) product = "Pomegranate";
+
+                // Known Party Logic
+                const isKnown = mode.includes("known"); // Check for "known" in Mode (e.g. "Known Party", "Known Pair")
+                if (isKnown) {
+                    if (product === "Pomegranate" || product === "POMO" || product.toUpperCase().includes("POMO")) {
+                        // User Request: Move Pomo KP to Pomogranate view, but show as "Pomo KP" row
+                        product = "Pomegranate";
+                        dtMarket = "Pomo KP"; // Override Market Name
+                    } else {
+                        product = "KP Trades"; // "Other KP" goes here
+                    }
+                }
+
+                // Demand Matrix Aggregation
+                if (!demandMatrix[product]) demandMatrix[product] = {};
+                if (!demandMatrix[product][dtMarket]) demandMatrix[product][dtMarket] = { s: 0, m: 0, vol: 0 };
+
+                // Demand Matrix: ONLY CLOSED TRADES
+                if (status === 'closed') {
+                    demandMatrix[product][dtMarket].s += s;
+                    demandMatrix[product][dtMarket].m += m;
+                    demandMatrix[product][dtMarket].vol += b;
+                }
+                // demandMatrix[product][dtMarket].vol += b; // Volume might include open? "Vol (Box)" usually strictly dispatched?
+                // User said "For sale and margin... show only closed". Implies Vol can be total? 
+                // In Ownership Matrix, "Vol" column shows closed and open. Let's keep Vol as Total. -> UPDATED: User requested Closed Only.
+
+                window.allDTTransactions.push({
+                    market: dtMarket,
+                    product: product,
+                    sales: s,
+                    margin: m,
+                    customer: cust,
+                    isClosed: status === 'closed'
+                });
+
+                const route = `${source} → ${dest}`;
+                if (status === 'closed') {
+                    // Exclude KP from Corridors if Pomo KP? User didn't specify, but usually KP is separate logic.
+                    // If we renamed market to "Pomo KP", the `dest` variable is still original "Unknown" or market name from col D.
+                    // Let's use the modified `dtMarket` for consistency if it's Pomo KP?
+                    // But `dtMarket` is local scope to previous block. 
+                    // Let's just execute standard logic.
+                    if (!corridors[route]) corridors[route] = { s: 0, m: 0 };
+                    corridors[route].s += s;
+                    corridors[route].m += m;
+                }
+            });
+
+            // Populate Checkbox Dropdown
+            const menu = document.getElementById('source-dropdown-menu');
+            menu.innerHTML = ''; // Clear existing
+
+            // 1. Add "Select All" Checkbox
+            const allLabel = document.createElement('label');
+            allLabel.className = "flex items-center gap-2 p-2 hover:bg-slate-50 rounded-lg cursor-pointer text-xs font-bold text-slate-800 border-b border-slate-100 mb-1 transition-colors select-none";
+            const allCheckbox = document.createElement('input');
+            allCheckbox.type = "checkbox";
+            allCheckbox.id = "source-select-all";
+            allCheckbox.checked = true;
+            allCheckbox.className = "rounded border-slate-300 text-blue-600 focus:ring-blue-500 w-3.5 h-3.5";
+
+            // "Select All" Logic
+            allCheckbox.onchange = function () {
+                const checkboxes = document.querySelectorAll('#source-dropdown-menu input[type="checkbox"]:not(#source-select-all)');
+                checkboxes.forEach(cb => cb.checked = this.checked);
+                updateSourceChart();
+            };
+
+            allLabel.appendChild(allCheckbox);
+            allLabel.appendChild(document.createTextNode("Select All"));
+            menu.appendChild(allLabel);
+
+            // 2. Add Individual Checkboxes
+            Array.from(uniqueSources).sort().forEach(src => {
+                const label = document.createElement('label');
+                label.className = "flex items-center gap-2 p-2 hover:bg-slate-50 rounded-lg cursor-pointer text-xs font-bold text-slate-600 transition-colors select-none";
+
+                const checkbox = document.createElement('input');
+                checkbox.type = "checkbox";
+                checkbox.value = src;
+                checkbox.checked = true;
+                checkbox.className = "rounded border-slate-300 text-blue-600 focus:ring-blue-500 w-3.5 h-3.5";
+
+                // Individual Logic: Update chart & sync "Select All" state
+                checkbox.onchange = function () {
+                    const allCb = document.getElementById('source-select-all');
+                    const checkboxes = document.querySelectorAll('#source-dropdown-menu input[type="checkbox"]:not(#source-select-all)');
+                    const allChecked = Array.from(checkboxes).every(c => c.checked);
+
+                    allCb.checked = allChecked;
+                    // Optional: Set indeterminate state if some are checked
+                    allCb.indeterminate = !allChecked && Array.from(checkboxes).some(c => c.checked);
+
+                    updateSourceChart();
+                };
+
+                label.appendChild(checkbox);
+                label.appendChild(document.createTextNode(src));
+                menu.appendChild(label);
+            });
+
+            // Initial render of Source Chart
+            updateSourceChart();
+            renderDispatchChart(rows);
+
+            // Top Stats (Compact)
+            document.getElementById('mtd-sales').innerText = compactRupee.format(tClosedS);
+            document.getElementById('mtd-margin').innerText = compactRupee.format(tM);
+            document.getElementById('margin-pct').innerText = (tS ? (tM / tS * 100).toFixed(1) : 0) + '%';
+
+            // Projected (Compact)
+            document.getElementById('total-open-boxes').innerText = tOpenBox.toLocaleString();
+            const proj = tOpenBox * (window.dbState.estPricePerBox || 1000);
+            document.getElementById('projected-open-val').innerText = compactRupee.format(proj);
+            document.getElementById('total-potential-rev').innerText = compactRupee.format(tClosedS + proj);
+
+            // Secondary Metrics Logic
+            const globalRate = tVol ? (tS / (tVol * 10)) : 0;
+            document.getElementById('kpi-global-rate').innerText = "₹" + globalRate.toFixed(1);
+
+            // Find Best Source Market
+            let bestMarket = { name: "-", rate: 0 };
+            Object.entries(sourceMarkets).forEach(([name, d]) => {
+                const rate = d.b ? (d.s / (d.b * 10)) : 0;
+                if (rate > bestMarket.rate && d.b > 50) {
+                    bestMarket = { name, rate };
+                }
+            });
+            document.getElementById('kpi-top-market').innerText = `${bestMarket.name} (₹${bestMarket.rate.toFixed(1)})`;
+
+            document.getElementById('kpi-volume').innerHTML = `
+                <div class="text-2xl font-black text-slate-900">${(tVol - tOpenBox).toLocaleString()}</div>
+            `.trim();
+            document.getElementById('kpi-customers').innerText = Object.keys(custs).length;
+
+            // Matrix Rendering (Ownership)
+            const tbody = document.getElementById('mark-breakdown-body');
+            tbody.innerHTML = '';
+
+            const sortedOwners = Object.keys(groups).sort((a, b) => {
+                const iA = OWNER_ORDER.indexOf(a), iB = OWNER_ORDER.indexOf(b);
+                return (iA === -1 ? 99 : iA) - (iB === -1 ? 99 : iB);
+            });
+
+            // Helper to get Owner Target (Month-aware)
+            const getOwnerTarget = (owner) => {
+                const db = window.dbState.targets;
+                if (!db) return { sales: 0, margin: 0, marginPct: 0 };
+
+                if (dateFilter !== 'All Months') {
+                    return (db[dateFilter] && db[dateFilter][owner]) ? db[dateFilter][owner] : { sales: 0, margin: 0, marginPct: 0 };
+                } else {
+                    let s = 0, m = 0;
+                    Object.values(db).forEach(monthData => {
+                        if (monthData[owner]) {
+                            s += monthData[owner].sales || 0;
+                            m += monthData[owner].margin || 0;
+                        }
+                    });
+                    return { sales: s, margin: m, marginPct: 0 };
+                }
+            };
+
+            // Calculate Totals for Ownership Header
+            let totalOwnerSalesTarget = 0, totalOwnerMarginTarget = 0;
+            let totalOwnerClosedBox = 0;
+
+            sortedOwners.forEach(owner => {
+                const t = getOwnerTarget(owner);
+                totalOwnerSalesTarget += (t.sales || 0) * 100000;
+                totalOwnerMarginTarget += (t.margin || 0) * 100000;
+
+                if (groups[owner]) {
+                    totalOwnerClosedBox += groups[owner].closedBox;
+                }
+            });
+
+
+
+            sortedOwners.forEach(owner => {
+                const d = groups[owner];
+                if (d.s === 0 && d.m === 0 && d.closedBox === 0 && d.openBox === 0) return;
+
+                const t = getOwnerTarget(owner);
+                const eff = d.s ? (d.m / d.s * 100) : 0;
+                const sPct = (t.sales * 100000) ? Math.min((d.s / (t.sales * 100000) * 100), 100) : 0;
+                const mPct = (t.margin * 100000) ? Math.min((d.m / (t.margin * 100000) * 100), 100) : 0;
+
+                const nameDisplay = owner.includes('Known') ? `<span>${owner.split(' (')[0]}</span><br><span class="text-[8px] text-blue-500 font-bold uppercase">Known Party</span>` : owner;
+                const rowClass = "hover:bg-slate-50/50 transition-colors border-b border-slate-100 last:border-0 clickable-row";
+
+                tbody.insertAdjacentHTML('beforeend', `
+                    <tr class="${rowClass}" onclick="showDrillDown('${owner}')">
+                        <td class="px-6 py-5 align-top"><span class="text-sm font-extrabold text-slate-800">${nameDisplay}</span></td>
+                        <td class="px-6 py-5 align-top text-center">
+                            <div class="inline-flex flex-col items-center">
+                                <span class="text-sm font-extrabold text-slate-700 mb-1">${d.closedBox.toLocaleString()}</span>
+                                <div class="flex flex-col text-[9px] font-medium text-slate-400 leading-tight">
+                                    <span>Open: <span class="text-slate-500">${d.openBox.toLocaleString()}</span></span>
+                                    <span>Total: <span class="text-slate-500">${(d.closedBox + d.openBox).toLocaleString()}</span></span>
+                                </div>
+                            </div>
+                        </td>
+                        <td class="px-6 py-5 align-top">
+                            <div class="w-full max-w-[160px]">
+                                <div class="flex justify-between text-[10px] mb-1"><span class="font-bold text-slate-700">${compactRupee.format(d.s)}</span><span class="text-blue-600 font-bold">${sPct.toFixed(0)}%</span></div>
+                                <div class="h-1.5 w-full bg-slate-100 rounded-full"><div class="h-full bg-blue-600 rounded-full" style="width:${sPct}%"></div></div>
+                                <div class="text-[9px] text-slate-700 font-black mt-1">Goal: ${formatLakhsCrores(t.sales * 100000)}</div>
+                            </div>
+                        </td>
+                        <td class="px-6 py-5 align-top">
+                            <div class="w-full max-w-[160px]">
+                                <div class="flex justify-between text-[10px] mb-1"><span class="font-bold text-slate-700">${compactRupee.format(d.m)}</span><span class="text-emerald-600 font-bold">${mPct.toFixed(0)}%</span></div>
+                                <div class="h-1.5 w-full bg-slate-100 rounded-full"><div class="h-full bg-emerald-500 rounded-full" style="width:${mPct}%"></div></div>
+                                <div class="text-[9px] text-slate-700 font-black mt-1">Goal: ${formatLakhsCrores(t.margin * 100000)}</div>
+                            </div>
+                        </td>
+                        <td class="px-6 py-5 text-right align-top">
+                            <span class="text-sm font-black text-slate-700">${eff.toFixed(2)}%</span>
+                            <div class="text-[8px] text-slate-400 font-bold uppercase">Target: ${t.marginPct || 0}%</div>
+                        </td>
+                `);
+            });
+
+            // Demand Matrix Rendering
+            // Populate Product Filter
+            const dmFilter = document.getElementById('demand-matrix-product-filter');
+            const availableProducts = Object.keys(demandMatrix).sort();
+
+            // Retain selection or Default to Pomegranate
+            let dmSelected = dmFilter.value;
+            dmFilter.innerHTML = '';
+            availableProducts.forEach(p => dmFilter.add(new Option(p, p)));
+
+            if (!availableProducts.includes(dmSelected)) {
+                if (availableProducts.includes("Pomegranate")) dmSelected = "Pomegranate";
+                else dmSelected = availableProducts[0];
+            }
+            if (dmSelected) dmFilter.value = dmSelected;
+
+            const getDemandTarget = (prod, mkt) => {
+                const db = window.dbState.dtTargets;
+                if (!db) return { sales: 0, margin: 0 };
+
+                // Special handling for "KP Trades" - aggregate all non-Pomo "Known Party" targets for this market
+                if (prod === 'KP Trades') {
+                    let s = 0, m = 0;
+
+                    if (dateFilter !== 'All Months') {
+                        // Single month
+                        if (db[dateFilter]) {
+                            Object.keys(db[dateFilter]).forEach(product => {
+                                // Skip Pomegranate (goes to Pomo KP)
+                                if (product === 'Pomegranate') return;
+
+                                const marketsData = db[dateFilter][product];
+                                Object.keys(marketsData).forEach(key => {
+                                    const target = marketsData[key];
+                                    // Check if Type is "Known Party" and market matches
+                                    if (target.type && target.type.toLowerCase().includes('known')) {
+                                        // Check if this target is for our market
+                                        const targetMarket = key.includes('::') ? key.split('::')[0] : key;
+                                        if (targetMarket === mkt) {
+                                            s += target.sales || 0;
+                                            m += target.margin || 0;
+                                        }
+                                    }
+                                });
+                            });
+                        }
+                    } else {
+                        // All months
+                        Object.values(db).forEach(monthData => {
+                            Object.keys(monthData).forEach(product => {
+                                // Skip Pomegranate
+                                if (product === 'Pomegranate') return;
+
+                                const marketsData = monthData[product];
+                                Object.keys(marketsData).forEach(key => {
+                                    const target = marketsData[key];
+                                    if (target.type && target.type.toLowerCase().includes('known')) {
+                                        const targetMarket = key.includes('::') ? key.split('::')[0] : key;
+                                        if (targetMarket === mkt) {
+                                            s += target.sales || 0;
+                                            m += target.margin || 0;
+                                        }
+                                    }
+                                });
+                            });
+                        });
+                    }
+
+                    return { sales: s, margin: m };
+                }
+
+                // Special handling for "Pomo KP" - aggregate all Pomegranate "Known Party" targets
+                if (prod === 'Pomegranate' && mkt === 'Pomo KP') {
+                    let s = 0, m = 0;
+
+                    if (dateFilter !== 'All Months') {
+                        // Single month
+                        if (db[dateFilter] && db[dateFilter]['Pomegranate']) {
+                            Object.keys(db[dateFilter]['Pomegranate']).forEach(key => {
+                                const target = db[dateFilter]['Pomegranate'][key];
+                                if (target.type && target.type.toLowerCase().includes('known')) {
+                                    s += target.sales || 0;
+                                    m += target.margin || 0;
+                                }
+                            });
+                        }
+                    } else {
+                        // All months
+                        Object.values(db).forEach(monthData => {
+                            if (monthData['Pomegranate']) {
+                                Object.keys(monthData['Pomegranate']).forEach(key => {
+                                    const target = monthData['Pomegranate'][key];
+                                    if (target.type && target.type.toLowerCase().includes('known')) {
+                                        s += target.sales || 0;
+                                        m += target.margin || 0;
+                                    }
+                                });
+                            }
+                        });
+                    }
+
+                    return { sales: s, margin: m };
+                }
+
+                if (dateFilter !== 'All Months') {
+                    // First, try to get direct market target (no customer)
+                    const directTarget = (db[dateFilter] && db[dateFilter][prod] && db[dateFilter][prod][mkt])
+                        ? db[dateFilter][prod][mkt]
+                        : null;
+
+                    if (directTarget) {
+                        return directTarget;
+                    }
+
+                    // If no direct market target, aggregate all customer targets for this market
+                    let s = 0, m = 0;
+                    if (db[dateFilter] && db[dateFilter][prod]) {
+                        Object.keys(db[dateFilter][prod]).forEach(key => {
+                            // Check if key starts with "market::" (customer-level target)
+                            if (key.startsWith(mkt + '::')) {
+                                s += db[dateFilter][prod][key].sales || 0;
+                                m += db[dateFilter][prod][key].margin || 0;
+                            }
+                        });
+                    }
+
+                    return { sales: s, margin: m };
+                } else {
+                    // "All Months" - sum across all months
+                    let s = 0, m = 0;
+                    Object.values(db).forEach(monthData => {
+                        if (monthData[prod]) {
+                            // Direct market target
+                            if (monthData[prod][mkt]) {
+                                s += monthData[prod][mkt].sales || 0;
+                                m += monthData[prod][mkt].margin || 0;
+                            }
+                            // Aggregate customer targets for this market
+                            Object.keys(monthData[prod]).forEach(key => {
+                                if (key.startsWith(mkt + '::')) {
+                                    s += monthData[prod][key].sales || 0;
+                                    m += monthData[prod][key].margin || 0;
+                                }
+                            });
+                        }
+                    });
+                    return { sales: s, margin: m };
+                }
+            };
+
+            // --- RENDER DEMAND MATRIX ---
+            const dmContainer = document.getElementById('demand-matrix-container'); // The Title ID
+            const dmBody = document.getElementById('demand-matrix-body');
+            dmBody.innerHTML = '';
+
+            const selectedProd = document.getElementById('demand-matrix-product-filter').value; // Use the actual filter ID
+            let demandRows = [];
+
+            // Filter by Selected Product (and aggregate header stats)
+            let headerSales = 0, headerMargin = 0, headerVol = 0;
+
+            // NEW: Populate demandRows from BOTH Actuals and Targets
+            const allProds = new Set(Object.keys(demandMatrix));
+
+            // Add Products from Targets
+            if (window.dbState.dtTargets && window.dbState.dtTargets[dateFilter]) {
+                Object.keys(window.dbState.dtTargets[dateFilter]).forEach(p => allProds.add(p));
+            }
+
+            allProds.forEach(prod => {
+                if (selectedProd !== 'All Products' && prod !== selectedProd) return;
+
+                const markets = demandMatrix[prod] || {};
+                const allMkts = new Set(Object.keys(markets));
+
+                // Special handling for KP Trades - extract markets from all products with Type='Known Party'
+                if (prod === 'KP Trades' && window.dbState.dtTargets && window.dbState.dtTargets[dateFilter]) {
+                    Object.keys(window.dbState.dtTargets[dateFilter]).forEach(product => {
+                        // Skip Pomegranate (goes to Pomo KP)
+                        if (product === 'Pomegranate') return;
+
+                        const marketsData = window.dbState.dtTargets[dateFilter][product];
+                        Object.keys(marketsData).forEach(key => {
+                            const target = marketsData[key];
+                            // Check if Type is "Known Party"
+                            if (target.type && target.type.toLowerCase().includes('known')) {
+                                // Extract market name
+                                const marketName = key.includes('::') ? key.split('::')[0] : key;
+                                allMkts.add(marketName);
+                            }
+                        });
+                    });
+                } else {
+                    // Normal product - extract from its own targets
+                    const targetMarkets = (window.dbState.dtTargets && window.dbState.dtTargets[dateFilter] && window.dbState.dtTargets[dateFilter][prod]) ? window.dbState.dtTargets[dateFilter][prod] : {};
+
+                    // Add Markets from Targets - include customer-level targets by extracting market name
+                    Object.keys(targetMarkets).forEach(k => {
+                        if (!k.includes('::')) {
+                            // OLD format: Direct market target (shouldn't happen with new logic, but keep for compatibility)
+                            allMkts.add(k);
+                        } else {
+                            // Customer-level or row-indexed target: extract market name from "Market::Customer" or "Market::_rowN" format
+                            const marketName = k.split('::')[0];
+                            allMkts.add(marketName);
+                        }
+                    });
+                }
+
+                allMkts.forEach(mkt => {
+                    const data = markets[mkt] || { s: 0, m: 0, vol: 0 };
+
+                    // OPTIMIZATION: Only show active markets (with actual data)
+                    if (data.vol === 0 && data.s === 0) return; // Skip empty markets
+
+                    demandRows.push({ prod, mkt, s: data.s, m: data.m, vol: data.vol });
+                    headerSales += data.s;
+                    headerMargin += data.m;
+                    headerVol += data.vol;
+                });
+            });
+
+            // Update Header with Totals
+            const dmTitle = document.getElementById('demand-matrix-title');
+            if (dmTitle) {
+                // Keep title clean
+                dmTitle.innerText = `Demand Matrix (${selectedProd})`;
+            }
+
+            // Sort Rows: Sales Descending, but "Pomo KP" at bottom for Pomegranate
+            demandRows.sort((a, b) => {
+                if (a.mkt === "Pomo KP" && b.mkt !== "Pomo KP") return 1; // Pomo KP last
+                if (a.mkt !== "Pomo KP" && b.mkt === "Pomo KP") return -1;
+                return b.s - a.s;
+            });
+
+            if (demandRows.length === 0) {
+                dmBody.innerHTML = '<tr><td colspan="5" class="px-6 py-8 text-center text-slate-400 text-xs italic">No data available</td></tr>';
+            } else {
+                // Update Header Totals: Calculate target from ALL markets in targets CSV, not just displayed rows
+                let headerSalesTarget = 0, headerMarginTarget = 0;
+
+                // Sum ALL market targets for this product from targets CSV
+                if (selectedProd === 'KP Trades' && window.dbState.dtTargets) {
+                    // Special handling for KP Trades - aggregate across all products with Type='Known Party'
+                    if (dateFilter !== 'All Months' && window.dbState.dtTargets[dateFilter]) {
+                        Object.keys(window.dbState.dtTargets[dateFilter]).forEach(product => {
+                            if (product === 'Pomegranate') return; // Skip Pomegranate
+
+                            const marketsData = window.dbState.dtTargets[dateFilter][product];
+                            Object.keys(marketsData).forEach(key => {
+                                const target = marketsData[key];
+                                if (target.type && target.type.toLowerCase().includes('known')) {
+                                    headerSalesTarget += (target.sales || 0);
+                                    headerMarginTarget += (target.margin || 0);
+                                }
+                            });
+                        });
+                    } else if (dateFilter === 'All Months') {
+                        Object.values(window.dbState.dtTargets).forEach(monthData => {
+                            Object.keys(monthData).forEach(product => {
+                                if (product === 'Pomegranate') return;
+
+                                const marketsData = monthData[product];
+                                Object.keys(marketsData).forEach(key => {
+                                    const target = marketsData[key];
+                                    if (target.type && target.type.toLowerCase().includes('known')) {
+                                        headerSalesTarget += (target.sales || 0);
+                                        headerMarginTarget += (target.margin || 0);
+                                    }
+                                });
+                            });
+                        });
+                    }
+                } else if (window.dbState.dtTargets) {
+                    // Regular product - sum all markets from targets
+                    if (dateFilter !== 'All Months' && window.dbState.dtTargets[dateFilter] && window.dbState.dtTargets[dateFilter][selectedProd]) {
+                        Object.keys(window.dbState.dtTargets[dateFilter][selectedProd]).forEach(key => {
+                            const target = window.dbState.dtTargets[dateFilter][selectedProd][key];
+                            headerSalesTarget += (target.sales || 0);
+                            headerMarginTarget += (target.margin || 0);
+                        });
+                    } else if (dateFilter === 'All Months') {
+                        Object.values(window.dbState.dtTargets).forEach(monthData => {
+                            if (monthData[selectedProd]) {
+                                Object.keys(monthData[selectedProd]).forEach(key => {
+                                    const target = monthData[selectedProd][key];
+                                    headerSalesTarget += (target.sales || 0);
+                                    headerMarginTarget += (target.margin || 0);
+                                });
+                            }
+                        });
+                    }
+                }
+
+                const totalYield = headerSales ? (headerMargin / headerSales * 100) : 0;
+
+                // Update DOM elements in header
+                const hVol = document.getElementById('dm-header-vol');
+                const hSales = document.getElementById('dm-header-sales');
+                const hMargin = document.getElementById('dm-header-margin');
+                const hYield = document.getElementById('dm-header-yield');
+
+                if (hVol) hVol.innerText = headerVol.toLocaleString();
+                if (hSales) hSales.innerHTML = `<span class="text-white">${compactRupee.format(headerSales)}</span> <span class="text-slate-400">/</span> <span class="text-slate-400 font-normal">${compactRupee.format(headerSalesTarget)}</span>`;
+                if (hMargin) hMargin.innerHTML = `<span class="text-emerald-300">${compactRupee.format(headerMargin)}</span>`;
+                if (hYield) hYield.innerText = totalYield.toFixed(2) + '%';
+
+                demandRows.forEach(r => {
+                    const t = getDemandTarget(r.prod, r.mkt);
+                    const sGoal = t.sales; // CSV already contains actual rupee value, no multiplication needed
+                    const mGoal = t.margin;
+
+                    const eff = r.s ? (r.m / r.s * 100) : 0;
+                    const sPct = sGoal > 0 ? (r.s / sGoal) * 100 : 0;
+                    const mPct = mGoal > 0 ? (r.m / mGoal) * 100 : 0;
+
+                    const rowClass = "hover:bg-slate-50/50 transition-colors border-b border-slate-100 last:border-0 cursor-pointer";
+
+                    dmBody.insertAdjacentHTML('beforeend', `
+                        <tr class="${rowClass}" onclick="showDemandDrillDown('${r.prod}', '${r.mkt}')">
+                             <td class="px-6 py-5 align-top"><span class="text-sm font-extrabold text-slate-800">${r.mkt}</span></td>
+                             <td class="px-6 py-5 align-top text-center">
+                                 <span class="text-sm font-extrabold text-slate-700">${r.vol.toLocaleString()}</span>
+                             </td>
+                             <td class="px-6 py-5 align-top">
+                                 <div class="w-full max-w-[160px]">
+                                     <div class="flex justify-between items-baseline mb-1">
+                                         <span class="text-[10px] font-bold text-slate-700">${compactRupee.format(r.s)}</span>
+                                         <span class="text-[10px] font-bold ${sPct >= 100 ? 'text-emerald-500' : 'text-blue-500'}">${Math.round(sPct)}%</span>
+                                     </div>
+                                     <div class="w-full bg-slate-100 rounded-full h-1.5 mb-1"><div class="bg-blue-500 h-1.5 rounded-full" style="width: ${Math.min(sPct, 100)}%"></div></div>
+                                     <div class="text-[9px] font-medium text-slate-400">Goal: <span class="text-slate-600">${formatLakhsCrores(t.sales)}</span></div>
+                                 </div>
+                             </td>
+                              <td class="px-6 py-5 align-top text-right">
+                                  <span class="text-sm font-extrabold text-slate-700">${compactRupee.format(r.m)}</span>
+                              </td>
+                             <td class="px-6 py-5 text-right font-bold align-top text-[10px] ${eff >= 0 ? 'text-slate-700' : 'text-red-500'}">
+                                 ${eff.toFixed(2)}%
+                             </td>
+                        </tr >
+                    `);
+                });
+            }
+
+
+            // Side panels - Top Customers
+            const topC = document.getElementById('top-customers-list'); topC.innerHTML = '';
+            Object.entries(custs).sort((a, b) => b[1].m - a[1].m).slice(0, 5).forEach(([n, d], i) => topC.insertAdjacentHTML('beforeend', `<div class="flex justify-between items-center p-2 border-b text-[10px]"><div class="font-bold w-4 text-slate-400">#${i + 1}</div><div class="flex-1 font-bold text-slate-700 truncate mr-2">${n}</div><div class="font-bold text-emerald-600">${compactRupee.format(d.m)}</div></div>`));
+
+            // Populate Product Dropdown & Render Top Markets
+            const productFilter = document.getElementById('dt-market-product-filter');
+            const uniqueProducts = Array.from(new Set(window.allDTTransactions.map(t => t.product))).sort();
+
+            // Save current selection if exists
+            const currentSelection = productFilter.value;
+
+            productFilter.innerHTML = '';
+            uniqueProducts.forEach(p => {
+                const opt = document.createElement('option');
+                opt.value = p;
+                opt.innerText = p;
+                productFilter.appendChild(opt);
+            });
+
+            // Default to Pomegranate if available, else All/First
+            if (uniqueProducts.includes("Pomegranate") && !currentSelection) {
+                productFilter.value = "Pomegranate";
+            } else if (currentSelection && uniqueProducts.includes(currentSelection)) {
+                productFilter.value = currentSelection;
+            }
+
+
+            // Add event listener to close sidebar when clicking outside
+            document.addEventListener('click', function (event) {
+                const sidebar = document.getElementById('config-sidebar');
+                const settingsBtn = document.getElementById('settings-btn');
+                // Check if sidebar is open (not translating out) and click is NOT inside sidebar AND NOT on the button
+                if (!sidebar.classList.contains('translate-x-full') &&
+                    !sidebar.contains(event.target) &&
+                    !settingsBtn.contains(event.target)) {
+                    toggleConfig();
+                }
+            });
+
+            renderTopMarkets();
+
+
+            // Side panels - Source Market Performance
+            const sourceMList = document.getElementById('source-market-list'); sourceMList.innerHTML = '';
+            const marketList = Object.entries(sourceMarkets).map(([n, d]) => ({
+                name: n,
+                rate: d.b ? (d.s / (d.b * 10)) : 0,
+                vol: d.b
+            })).sort((a, b) => b.rate - a.rate);
+
+            marketList.forEach(m => {
+                sourceMList.insertAdjacentHTML('beforeend', `
+                        <div class="p-2 border rounded mb-2 bg-slate-50">
+                        <div class="flex justify-between items-center mb-1">
+                            <span class="text-[10px] font-black text-slate-800">${m.name}</span>
+                            <span class="text-xs font-bold text-blue-600">₹${m.rate.toFixed(1)}<span class="text-[9px] text-slate-400 font-normal">/kg</span></span>
+                        </div>
+                        <div class="flex justify-between items-center">
+                            <div class="h-1 flex-1 bg-slate-200 rounded-full mr-3"><div class="h-full bg-blue-500 rounded-full" style="width:${Math.min((m.rate / 150) * 100, 100)}%"></div></div>
+                            <span class="text-[8px] text-slate-400 font-bold">${m.vol} Boxes</span>
+                        </div>
+                    </div>
+                        `);
+            });
+
+            // Side panels - Trade Corridor (Restored)
+            const corrList = document.getElementById('corridor-list'); corrList.innerHTML = '';
+            Object.entries(corridors).sort((a, b) => b[1].m - a[1].m).slice(0, 5).forEach(([n, d]) => {
+                corrList.insertAdjacentHTML('beforeend', `
+                        <div class="p-2 border rounded mb-2 hover:bg-slate-50 transition-colors">
+                        <div class="flex justify-between text-[10px] font-bold"><span class="text-slate-700 truncate max-w-[150px]">${n}</span><span class="text-blue-600">${compactRupee.format(d.m)}</span></div>
+                        <div class="text-[9px] text-slate-400 mt-1 flex justify-between">
+                            <span>Yield: ${(d.m / d.s * 100).toFixed(1)}%</span>
+                            <span>Sales: ${compactRupee.format(d.s)}</span>
+                        </div>
+                    </div>
+                        `);
+            });
+
+            // CHART: Water Flow (Cumulative GMV Daily)
+            if (trendChart) trendChart.destroy();
+
+            const dates = Object.keys(dailySales).sort();
+            const displayDates = dates.map(d => {
+                const date = new Date(d);
+                return date.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
+            });
+
+            let runningTotal = 0;
+            const cumulativeData = dates.map(d => {
+                runningTotal += dailySales[d];
+                return runningTotal;
+            });
+
+            trendChart = new Chart(document.getElementById('trendChart'), {
+                type: 'line',
+                data: {
+                    labels: displayDates,
+                    datasets: [{
+                        label: 'Cumulative Closed GMV',
+                        data: cumulativeData,
+                        borderColor: '#2563eb',
+                        backgroundColor: 'rgba(37, 99, 235, 0.15)', // Water effect
+                        fill: 'origin',
+                        tension: 0.4,
+                        pointRadius: 2,
+                        pointHoverRadius: 4
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: { display: false },
+                        tooltip: {
+                            callbacks: {
+                                label: (ctx) => ` ₹${compactRupee.format(ctx.raw)} `
+                            }
+                        }
+                    },
+                    scales: {
+                        x: {
+                            grid: { display: false },
+                            ticks: { maxTicksLimit: 10, font: { size: 9 } }
+                        },
+                        y: {
+                            beginAtZero: true,
+                            grid: { display: false },
+                            ticks: {
+                                callback: (val) => compactRupee.format(val),
+                                font: { size: 9 }
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        function renderTopMarkets() {
+            const productFilter = document.getElementById('dt-market-product-filter');
+            const selectedProduct = productFilter.value;
+            const container = document.getElementById('top-market-list');
+            container.innerHTML = '';
+
+            const marketStats = {};
+
+            window.allDTTransactions.forEach(t => {
+                if (t.product === selectedProduct) {
+                    if (!marketStats[t.market]) marketStats[t.market] = { s: 0, m: 0, customers: new Set() };
+                    marketStats[t.market].s += t.sales;
+                    marketStats[t.market].m += t.margin;
+                    marketStats[t.market].customers.add(t.customer);
+                }
+            });
+
+            const sorted = Object.entries(marketStats)
+                .sort((a, b) => b[1].s - a[1].s)
+                .slice(0, 5);
+
+            if (sorted.length === 0) {
+                container.innerHTML = '<div class="text-center text-[10px] text-slate-400 p-2">No data</div>';
+                return;
+            }
+
+            sorted.forEach(([n, d]) => {
+                container.insertAdjacentHTML('beforeend', `
+                        <div class="p-2 border rounded mb-2 hover:bg-slate-50 transition-colors">
+                        <div class="flex justify-between text-[10px] font-bold">
+                            <span class="text-slate-700 truncate max-w-[150px]">${n}</span>
+                            <span class="text-blue-600">${compactRupee.format(d.s)}</span>
+                        </div>
+                        <div class="text-[9px] text-slate-400 mt-1 flex justify-between">
+                            <span class="font-bold text-emerald-600">Margin: ${compactRupee.format(d.m)}</span>
+                            <span>${d.customers.size} Unique Cust.</span>
+                        </div>
+                    </div>
+                `);
+            });
+        }
+    </script>
+</body>
+
+</html>
