@@ -390,6 +390,16 @@
             z-index: 10;
             position: relative;
         }
+
+        /* Remove hover effect from Ownership Matrix to match Demand Matrix */
+        #mark-breakdown-body .clickable-row:hover {
+            transform: none !important;
+            box-shadow: none !important;
+            z-index: auto !important;
+            position: static !important;
+            background-color: rgb(248 250 252) !important;
+            /* bg-slate-50 */
+        }
     </style>
 </head>
 
@@ -1288,14 +1298,16 @@
 
             // Aggregate by Customer
             const custStats = {};
-            let tS = 0, tM = 0;
+            let tS = 0, tM = 0, tB = 0;
 
             txs.forEach(t => {
-                if (!custStats[t.customer]) custStats[t.customer] = { s: 0, m: 0 };
+                if (!custStats[t.customer]) custStats[t.customer] = { s: 0, m: 0, b: 0 };
                 custStats[t.customer].s += t.sales;
                 custStats[t.customer].m += t.margin;
+                custStats[t.customer].b += t.boxes;
                 tS += t.sales;
                 tM += t.margin;
+                tB += t.boxes;
             });
 
             // Get Targets (Market & Customer)
@@ -1308,10 +1320,10 @@
                     <thead class="bg-slate-50 text-[10px] font-bold text-slate-500 uppercase">
                         <tr>
                             <th class="p-3">Customer</th>
-                            <th class="p-3 text-right">Sales</th>
+                            <th class="p-3">Boxes</th>
+                            <th class="p-3">Sales</th>
                             <th class="p-3 text-right">Margin</th>
                             <th class="p-3 text-right">Yield</th>
-                            <th class="p-3 text-right">Target Status</th>
                         </tr>
                     </thead>
                     <tbody class="divide-y divide-slate-100 text-xs text-slate-700">
@@ -1332,10 +1344,11 @@
                                 if (target.type && target.type.toLowerCase().includes('known')) {
                                     // Found matching customer target
                                     if (!cTarget) {
-                                        cTarget = { sales: 0, margin: 0 };
+                                        cTarget = { sales: 0, margin: 0, boxes: 0 };
                                     }
                                     cTarget.sales += target.sales || 0;
                                     cTarget.margin += target.margin || 0;
+                                    cTarget.boxes += target.boxes || 0;
                                 }
                             }
                         });
@@ -1344,28 +1357,41 @@
                     }
                 }
 
-                let targetHtml = '<span class="text-slate-300">-</span>';
-                if (cTarget) {
-                    const goal = cTarget.sales; // CSV contains actual rupee value, no multiplication needed
-                    const pct = goal ? Math.min((d.s / goal) * 100, 100) : 0;
-                    targetHtml = `
-                                    <div class="w-28 ml-auto">
-                                        <div class="flex justify-between items-baseline text-[9px] mb-1">
-                                            <span class="font-bold ${pct >= 100 ? 'text-emerald-600' : 'text-blue-600'}">${Math.round(pct)}%</span>
-                                            <span class="text-slate-500 font-medium">${formatLakhsCrores(goal)}</span>
-                                        </div>
-                                        <div class="h-1.5 bg-slate-100 rounded-full"><div class="h-full bg-blue-500 rounded-full" style="width:${pct}%"></div></div>
-                                    </div>
-                                `;
+                // Sales column with target
+                let salesHtml = `<div class="w-32"><div class="text-[11px] font-bold">${compactRupee.format(d.s)}</div>`;
+                if (cTarget && cTarget.sales) {
+                    const sPct = Math.min((d.s / cTarget.sales) * 100, 100);
+                    salesHtml += `
+                        <div class="flex justify-between items-baseline text-[9px] mt-1 mb-0.5">
+                            <span class="text-slate-400">Goal: ${formatLakhsCrores(cTarget.sales)}</span>
+                            <span class="font-bold ${sPct >= 100 ? 'text-emerald-600' : 'text-blue-600'}">${Math.round(sPct)}%</span>
+                        </div>
+                        <div class="h-1.5 bg-slate-100 rounded-full"><div class="h-full bg-blue-500 rounded-full" style="width:${sPct}%"></div></div>
+                    `;
                 }
+                salesHtml += `</div>`;
+
+                // Boxes column with target
+                let boxesHtml = `<div class="w-32"><div class="text-[11px] font-bold">${d.b.toLocaleString()}</div>`;
+                if (cTarget && cTarget.boxes) {
+                    const bPct = Math.min((d.b / cTarget.boxes) * 100, 100);
+                    boxesHtml += `
+                        <div class="flex justify-between items-baseline text-[9px] mt-1 mb-0.5">
+                            <span class="text-slate-400">Goal: ${cTarget.boxes.toLocaleString()}</span>
+                            <span class="font-bold ${bPct >= 100 ? 'text-emerald-600' : 'text-blue-600'}">${Math.round(bPct)}%</span>
+                        </div>
+                        <div class="h-1.5 bg-slate-100 rounded-full"><div class="h-full bg-blue-500 rounded-full" style="width:${bPct}%"></div></div>
+                    `;
+                }
+                boxesHtml += `</div>`;
 
                 return `
                                 <tr class="hover:bg-slate-50">
                                     <td class="p-3 font-bold">${c}</td>
-                                    <td class="p-3 text-right font-bold">${compactRupee.format(d.s)}</td>
+                                    <td class="p-3">${boxesHtml}</td>
+                                    <td class="p-3">${salesHtml}</td>
                                     <td class="p-3 text-right font-bold text-emerald-600">${compactRupee.format(d.m)}</td>
                                     <td class="p-3 text-right">${yieldPct.toFixed(1)}%</td>
-                                    <td class="p-3 text-right">${targetHtml}</td>
                                 </tr>
                             `;
             }).join('')}
@@ -1373,10 +1399,10 @@
                     <tfoot class="bg-slate-50 font-bold text-xs">
                          <tr>
                             <td class="p-3">TOTAL</td>
-                            <td class="p-3 text-right">${compactRupee.format(tS)}</td>
+                            <td class="p-3">${tB.toLocaleString()}</td>
+                            <td class="p-3">${compactRupee.format(tS)}</td>
                             <td class="p-3 text-right text-emerald-600">${compactRupee.format(tM)}</td>
                             <td class="p-3 text-right">${tS ? (tM / tS * 100).toFixed(1) : 0}%</td>
-                            <td class="p-3"></td>
                          </tr>
                     </tfoot>
                 </table>
@@ -1686,6 +1712,7 @@
                             const dtCust = row[9]?.trim();
                             const dtType = row[10]?.trim();
                             const dtSales = row[11];
+                            const dtBoxes = row[12]; // NEW: Boxes Target from Column M
 
                             // Normalization
                             if (dtProd.toLowerCase() === 'pomegranates') dtProd = 'Pomegranate';
@@ -1702,6 +1729,7 @@
                             newDtTargets[dtMonth][dtProd][key] = {
                                 sales: cleanNum(dtSales),
                                 margin: 0,
+                                boxes: cleanNum(dtBoxes), // Add boxes to target data structure
                                 type: dtType
                             };
                         }
@@ -2165,6 +2193,7 @@
                     product: product,
                     sales: s,
                     margin: m,
+                    boxes: b,
                     customer: cust,
                     isClosed: status === 'closed'
                 });
@@ -2323,7 +2352,7 @@
                 const mPct = (t.margin * 100000) ? Math.min((d.m / (t.margin * 100000) * 100), 100) : 0;
 
                 const nameDisplay = owner.includes('Known') ? `<span>${owner.split(' (')[0]}</span><br><span class="text-[8px] text-blue-500 font-bold uppercase">Known Party</span>` : owner;
-                const rowClass = "hover:bg-slate-50/50 transition-colors border-b border-slate-100 last:border-0 clickable-row";
+                const rowClass = "border-b border-slate-100 last:border-0 clickable-row";
 
                 tbody.insertAdjacentHTML('beforeend', `
                     <tr class="${rowClass}" onclick="showDrillDown('${owner}')">
@@ -2376,11 +2405,11 @@
 
             const getDemandTarget = (prod, mkt) => {
                 const db = window.dbState.dtTargets;
-                if (!db) return { sales: 0, margin: 0 };
+                if (!db) return { sales: 0, margin: 0, boxes: 0 };
 
                 // Special handling for "KP Trades" - aggregate all non-Pomo "Known Party" targets for this market
                 if (prod === 'KP Trades') {
-                    let s = 0, m = 0;
+                    let s = 0, m = 0, b = 0;
 
                     if (dateFilter !== 'All Months') {
                         // Single month
@@ -2399,6 +2428,7 @@
                                         if (targetMarket === mkt) {
                                             s += target.sales || 0;
                                             m += target.margin || 0;
+                                            b += target.boxes || 0;
                                         }
                                     }
                                 });
@@ -2419,6 +2449,7 @@
                                         if (targetMarket === mkt) {
                                             s += target.sales || 0;
                                             m += target.margin || 0;
+                                            b += target.boxes || 0;
                                         }
                                     }
                                 });
@@ -2426,12 +2457,12 @@
                         });
                     }
 
-                    return { sales: s, margin: m };
+                    return { sales: s, margin: m, boxes: b };
                 }
 
                 // Special handling for "Pomo KP" - aggregate all Pomegranate "Known Party" targets
                 if (prod === 'Pomegranate' && mkt === 'Pomo KP') {
-                    let s = 0, m = 0;
+                    let s = 0, m = 0, b = 0;
 
                     if (dateFilter !== 'All Months') {
                         // Single month
@@ -2441,6 +2472,7 @@
                                 if (target.type && target.type.toLowerCase().includes('known')) {
                                     s += target.sales || 0;
                                     m += target.margin || 0;
+                                    b += target.boxes || 0;
                                 }
                             });
                         }
@@ -2453,13 +2485,14 @@
                                     if (target.type && target.type.toLowerCase().includes('known')) {
                                         s += target.sales || 0;
                                         m += target.margin || 0;
+                                        b += target.boxes || 0;
                                     }
                                 });
                             }
                         });
                     }
 
-                    return { sales: s, margin: m };
+                    return { sales: s, margin: m, boxes: b };
                 }
 
                 if (dateFilter !== 'All Months') {
@@ -2473,38 +2506,51 @@
                     }
 
                     // If no direct market target, aggregate all customer targets for this market
-                    let s = 0, m = 0;
+                    let s = 0, m = 0, b = 0;
                     if (db[dateFilter] && db[dateFilter][prod]) {
                         Object.keys(db[dateFilter][prod]).forEach(key => {
                             // Check if key starts with "market::" (customer-level target)
                             if (key.startsWith(mkt + '::')) {
-                                s += db[dateFilter][prod][key].sales || 0;
-                                m += db[dateFilter][prod][key].margin || 0;
+                                const target = db[dateFilter][prod][key];
+                                // EXCLUDE Known Party targets (they go to KP section only)
+                                if (target.type && target.type.toLowerCase().includes('known')) {
+                                    return; // Skip this target
+                                }
+                                s += target.sales || 0;
+                                m += target.margin || 0;
+                                b += target.boxes || 0;
                             }
                         });
                     }
 
-                    return { sales: s, margin: m };
+                    return { sales: s, margin: m, boxes: b };
                 } else {
                     // "All Months" - sum across all months
-                    let s = 0, m = 0;
+                    let s = 0, m = 0, b = 0;
                     Object.values(db).forEach(monthData => {
                         if (monthData[prod]) {
                             // Direct market target
                             if (monthData[prod][mkt]) {
                                 s += monthData[prod][mkt].sales || 0;
                                 m += monthData[prod][mkt].margin || 0;
+                                b += monthData[prod][mkt].boxes || 0;
                             }
                             // Aggregate customer targets for this market
                             Object.keys(monthData[prod]).forEach(key => {
                                 if (key.startsWith(mkt + '::')) {
-                                    s += monthData[prod][key].sales || 0;
-                                    m += monthData[prod][key].margin || 0;
+                                    const target = monthData[prod][key];
+                                    // EXCLUDE Known Party targets (they go to KP section only)
+                                    if (target.type && target.type.toLowerCase().includes('known')) {
+                                        return; // Skip this target
+                                    }
+                                    s += target.sales || 0;
+                                    m += target.margin || 0;
+                                    b += target.boxes || 0;
                                 }
                             });
                         }
                     });
-                    return { sales: s, margin: m };
+                    return { sales: s, margin: m, boxes: b };
                 }
             };
 
@@ -2598,7 +2644,7 @@
                 dmBody.innerHTML = '<tr><td colspan="5" class="px-6 py-8 text-center text-slate-400 text-xs italic">No data available</td></tr>';
             } else {
                 // Update Header Totals: Calculate target from ALL markets in targets CSV, not just displayed rows
-                let headerSalesTarget = 0, headerMarginTarget = 0;
+                let headerSalesTarget = 0, headerMarginTarget = 0, headerBoxesTarget = 0;
 
                 // Sum ALL market targets for this product from targets CSV
                 if (selectedProd === 'KP Trades' && window.dbState.dtTargets) {
@@ -2613,6 +2659,7 @@
                                 if (target.type && target.type.toLowerCase().includes('known')) {
                                     headerSalesTarget += (target.sales || 0);
                                     headerMarginTarget += (target.margin || 0);
+                                    headerBoxesTarget += (target.boxes || 0);
                                 }
                             });
                         });
@@ -2627,6 +2674,7 @@
                                     if (target.type && target.type.toLowerCase().includes('known')) {
                                         headerSalesTarget += (target.sales || 0);
                                         headerMarginTarget += (target.margin || 0);
+                                        headerBoxesTarget += (target.boxes || 0);
                                     }
                                 });
                             });
@@ -2637,16 +2685,28 @@
                     if (dateFilter !== 'All Months' && window.dbState.dtTargets[dateFilter] && window.dbState.dtTargets[dateFilter][selectedProd]) {
                         Object.keys(window.dbState.dtTargets[dateFilter][selectedProd]).forEach(key => {
                             const target = window.dbState.dtTargets[dateFilter][selectedProd][key];
+                            // EXCLUDE Known Party targets for non-Pomegranate products only
+                            // Pomegranate header SHOULD include Pomo KP targets
+                            if (selectedProd !== 'Pomegranate' && target.type && target.type.toLowerCase().includes('known')) {
+                                return; // Skip KP targets for other products
+                            }
                             headerSalesTarget += (target.sales || 0);
                             headerMarginTarget += (target.margin || 0);
+                            headerBoxesTarget += (target.boxes || 0);
                         });
                     } else if (dateFilter === 'All Months') {
                         Object.values(window.dbState.dtTargets).forEach(monthData => {
                             if (monthData[selectedProd]) {
                                 Object.keys(monthData[selectedProd]).forEach(key => {
                                     const target = monthData[selectedProd][key];
+                                    // EXCLUDE Known Party targets for non-Pomegranate products only
+                                    // Pomegranate header SHOULD include Pomo KP targets
+                                    if (selectedProd !== 'Pomegranate' && target.type && target.type.toLowerCase().includes('known')) {
+                                        return; // Skip KP targets for other products
+                                    }
                                     headerSalesTarget += (target.sales || 0);
                                     headerMarginTarget += (target.margin || 0);
+                                    headerBoxesTarget += (target.boxes || 0);
                                 });
                             }
                         });
@@ -2661,7 +2721,7 @@
                 const hMargin = document.getElementById('dm-header-margin');
                 const hYield = document.getElementById('dm-header-yield');
 
-                if (hVol) hVol.innerText = headerVol.toLocaleString();
+                if (hVol) hVol.innerHTML = `<span class="text-white">${headerVol.toLocaleString()}</span> <span class="text-slate-400">/</span> <span class="text-slate-400 font-normal">${headerBoxesTarget.toLocaleString()}</span>`;
                 if (hSales) hSales.innerHTML = `<span class="text-white">${compactRupee.format(headerSales)}</span> <span class="text-slate-400">/</span> <span class="text-slate-400 font-normal">${compactRupee.format(headerSalesTarget)}</span>`;
                 if (hMargin) hMargin.innerHTML = `<span class="text-emerald-300">${compactRupee.format(headerMargin)}</span>`;
                 if (hYield) hYield.innerText = totalYield.toFixed(2) + '%';
@@ -2670,18 +2730,27 @@
                     const t = getDemandTarget(r.prod, r.mkt);
                     const sGoal = t.sales; // CSV already contains actual rupee value, no multiplication needed
                     const mGoal = t.margin;
+                    const boxGoal = t.boxes; // Boxes target from Column M
 
                     const eff = r.s ? (r.m / r.s * 100) : 0;
                     const sPct = sGoal > 0 ? (r.s / sGoal) * 100 : 0;
                     const mPct = mGoal > 0 ? (r.m / mGoal) * 100 : 0;
+                    const boxPct = boxGoal > 0 ? (r.vol / boxGoal) * 100 : 0;
 
-                    const rowClass = "hover:bg-slate-50/50 transition-colors border-b border-slate-100 last:border-0 cursor-pointer";
+                    const rowClass = "hover:bg-slate-50 transition-colors border-b border-slate-100 last:border-0 cursor-pointer";
 
                     dmBody.insertAdjacentHTML('beforeend', `
                         <tr class="${rowClass}" onclick="showDemandDrillDown('${r.prod}', '${r.mkt}')">
                              <td class="px-6 py-5 align-top"><span class="text-sm font-extrabold text-slate-800">${r.mkt}</span></td>
-                             <td class="px-6 py-5 align-top text-center">
-                                 <span class="text-sm font-extrabold text-slate-700">${r.vol.toLocaleString()}</span>
+                             <td class="px-6 py-5 align-top">
+                                 <div class="w-full max-w-[160px]">
+                                     <div class="flex justify-between items-baseline mb-1">
+                                         <span class="text-[10px] font-bold text-slate-700">${r.vol.toLocaleString()}</span>
+                                         <span class="text-[10px] font-bold ${boxPct >= 100 ? 'text-emerald-500' : 'text-blue-500'}">${Math.round(boxPct)}%</span>
+                                     </div>
+                                     <div class="w-full bg-slate-100 rounded-full h-1.5 mb-1"><div class="bg-blue-500 h-1.5 rounded-full" style="width: ${Math.min(boxPct, 100)}%"></div></div>
+                                     <div class="text-[9px] font-medium text-slate-400">Goal: <span class="text-slate-600">${boxGoal.toLocaleString()}</span></div>
+                                 </div>
                              </td>
                              <td class="px-6 py-5 align-top">
                                  <div class="w-full max-w-[160px]">
