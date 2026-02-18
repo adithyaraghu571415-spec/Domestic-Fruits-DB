@@ -1574,10 +1574,17 @@
 
             // Filter raw data (No Date Filter - All data passes)
             // Use current global filter
-            const monthFilter = document.getElementById('month-filter').value;
+            // Filter raw data (No Date Filter - All data passes)
+            // Use current global filter
+            const dateFilter = document.getElementById('date-filter');
+            const dateVal = dateFilter ? dateFilter.value : 'All';
             let currentData = window.rawData;
-            if (monthFilter !== 'All') {
-                currentData = window.rawData.filter(r => r[1]?.trim() === monthFilter);
+
+            if (dateVal !== 'All') {
+                const parts = dateVal.split(' ');
+                const month = parts[0];
+                const year = parts[1];
+                currentData = window.rawData.filter(r => r[1]?.trim() === month && r[14]?.trim() === year);
             }
 
             const filteredRows = currentData.filter(row => {
@@ -1706,7 +1713,7 @@
 
                 if (rows.length > 0) {
                     window.rawData = rows;
-                    populateMonthFilter(rows);
+                    populateFilters(true);
                     filterAndRender();
                     updateStatus('Cloud Synced', 'bg-emerald-500');
                     document.getElementById('empty-state').classList.add('hidden');
@@ -1737,7 +1744,7 @@
                                 try {
                                     const rows = parseCSV(text).slice(1);
                                     window.rawData = rows;
-                                    populateMonthFilter(rows);
+                                    populateFilters(true);
                                     filterAndRender();
                                     updateStatus('Manual Data Loaded', 'bg-emerald-500');
                                     document.getElementById('empty-state').classList.add('hidden');
@@ -1957,8 +1964,8 @@
         function filterAndRender() {
             const monthFilter = document.getElementById('month-filter');
             const yearFilter = document.getElementById('year-filter');
-            const monthVal = monthFilter.value;
-            const yearVal = yearFilter.value;
+            const monthVal = monthFilter ? monthFilter.value : 'All';
+            const yearVal = yearFilter ? yearFilter.value : 'All';
 
             let data = window.rawData;
 
@@ -1975,12 +1982,14 @@
             renderDashboard(data);
         }
 
-        function populateFilters(selectedYearFilter = null, defaultToLatest = false) {
+        function populateFilters(defaultToLatest = false) {
             const monthFilter = document.getElementById('month-filter');
             const yearFilter = document.getElementById('year-filter');
 
             // Store current month selection to restore if possible
-            const currentMonthValue = monthFilter.value;
+            const currentMonthValue = monthFilter ? monthFilter.value : 'All';
+            // Store current year to preserve if possible (though we rebuild it, value might stay)
+            const currentYearValue = yearFilter ? yearFilter.value : 'All';
 
             // Extract unique years and months from raw data
             const years = new Set();
@@ -1995,70 +2004,59 @@
                         yearMonthMap[year] = new Set();
                     }
                     yearMonthMap[year].add(month);
-                    // Debug: Log if 2026 has unexpected months
-                    if (year === '2026' && month === 'December') {
-                        console.log('Found December 2026 in row:', row);
-                    }
                 }
             });
-            console.log('Year-Month Map:', yearMonthMap);
-
-            // Store globally for later use
             window.yearMonthMap = yearMonthMap;
 
+            // Populate year dropdown (rebuild strictly to ensure order)
+            // But if we want to preserve selection, we need to grab value first.
+            // Actually, let's clear and rebuild.
+            // Check if options exist to avoid flicker? No, we need to ensure completeness.
+            const sortedYears = Array.from(years).sort((a, b) => b.localeCompare(a));
 
-            // Populate year dropdown only once
-            if (yearFilter.options.length <= 1) {
-                yearFilter.innerHTML = '<option value="All">All Years</option>';
+            // Save current selection
+            const oldYear = yearFilter.value;
 
-                // Sort years in descending order (newest first)
-                const sortedYears = Array.from(years).sort((a, b) => b.localeCompare(a));
+            yearFilter.innerHTML = '<option value="All">All Years</option>';
+            sortedYears.forEach(year => {
+                const option = document.createElement('option');
+                option.value = year;
+                option.textContent = year;
+                yearFilter.appendChild(option);
+            });
 
-                // Populate year dropdown
-                sortedYears.forEach(year => {
-                    const option = document.createElement('option');
-                    option.value = year;
-                    option.textContent = year;
-                    yearFilter.appendChild(option);
-                });
-
-                // Set default to most recent year
-                if (sortedYears.length > 0) {
-                    yearFilter.value = sortedYears[0];
-                    // Instead of recursion, simply update the current execution context
-                    selectedYearFilter = sortedYears[0];
-                    defaultToLatest = true;
-                }
+            // Restore year selection or Default
+            if (defaultToLatest) {
+                if (sortedYears.length > 0) yearFilter.value = sortedYears[0];
+            } else {
+                if (sortedYears.includes(oldYear)) yearFilter.value = oldYear;
+                else if (oldYear === 'All') yearFilter.value = 'All';
+                else if (sortedYears.length > 0) yearFilter.value = sortedYears[0]; // Fallback
             }
 
-            // Determine which year to filter by
-            const filterYear = selectedYearFilter || yearFilter.value;
+            // Determine which year is NOW selected
+            const filterYear = yearFilter.value;
 
-            // Get months to show based on selected year
+            // Get available months based on selected year
             let monthsToShow = new Set();
             if (filterYear === 'All') {
-                // Show all months across all years
                 Object.values(yearMonthMap).forEach(monthSet => {
                     monthSet.forEach(month => monthsToShow.add(month));
                 });
             } else {
-                // Show only months for selected year
                 monthsToShow = yearMonthMap[filterYear] || new Set();
             }
-
-            // Clear and populate month dropdown
-            monthFilter.innerHTML = '<option value="All">All Months</option>';
 
             // Month order for sorting
             const monthOrder = ['January', 'February', 'March', 'April', 'May', 'June',
                 'July', 'August', 'September', 'October', 'November', 'December'];
 
-            // Sort months by calendar order
             const sortedMonths = Array.from(monthsToShow).sort((a, b) => {
                 return monthOrder.indexOf(a) - monthOrder.indexOf(b);
             });
 
             // Populate month dropdown
+            monthFilter.innerHTML = '<option value="All">All Months</option>';
             sortedMonths.forEach(month => {
                 const option = document.createElement('option');
                 option.value = month;
@@ -2066,28 +2064,61 @@
                 monthFilter.appendChild(option);
             });
 
-            // Restore month selection if it's still available
-            if (sortedMonths.includes(currentMonthValue) && !defaultToLatest) {
-                monthFilter.value = currentMonthValue;
-            } else if (defaultToLatest && sortedMonths.length > 0) {
-                // Select the latest month (last in the sorted list)
-                monthFilter.value = sortedMonths[sortedMonths.length - 1];
+            // Logic for Selecting Default Month
+            if (defaultToLatest) {
+                // If initializing, pick the latest available month
+                if (sortedMonths.length > 0) {
+                    monthFilter.value = sortedMonths[sortedMonths.length - 1]; // Dec is last
+                }
             } else {
-                monthFilter.value = 'All';
+                // Try to keep current selection if valid for new year
+                if (sortedMonths.includes(currentMonthValue)) {
+                    monthFilter.value = currentMonthValue;
+                } else {
+                    monthFilter.value = 'All';
+                }
             }
         }
 
-        // Update year filter to trigger month repopulation on change
+        // Event Listener: When Year changes, re-populate months
+        // Note: We need to ensure this is added only once or handled correctly.
+        // We will add it to window load or assuming this script runs once.
+        // But since we are replacing the function block, we can just add the listener logic here if it's top level.
+        // However, this code block is inside the main <script> tag.
+
+        // We'll append the listener attachment logic to ensure it works.
+        // Remove old listener if possible? Hard with anonymous functions. 
+        // We'll rely on the element.onchange attribute in HTML or add a fresh listener.
+        // Actually, the HTML uses onchange="filterAndRender()". 
+        // WE NEED TO CHANGE HTML to also trigger populateFilters on year change? 
+        // No, populateFilters calls filterAndRender? No.
+
+        // In the original HTML I wrote: <select id="year-filter" onchange="filterAndRender()">
+        // But that only calls filterAndRender. It DOES NOT call populateFilters to update months.
+
+        // Fix: We will attach the listener here.
+        // To prevent multiple listeners, we can use onchange property assignments if we want.
+        // let yearEl = document.getElementById('year-filter');
+        // if(yearEl) yearEl.onchange = function() { populateFilters(false); filterAndRender(); };
+
+        // Attach listener for dynamic month updates
         document.addEventListener('DOMContentLoaded', () => {
-            const yearFilter = document.getElementById('year-filter');
-            if (yearFilter) {
-                yearFilter.addEventListener('change', () => {
-                    populateFilters(yearFilter.value);
-                    filterAndRender(); // Re-render with new filters
-                });
+            const yf = document.getElementById('year-filter');
+            if (yf) {
+                yf.onchange = function () {
+                    populateFilters(false);
+                    filterAndRender();
+                };
             }
         });
-
+        // Also attach immediately in case DOMContentLoaded fired
+        const yfDirect = document.getElementById('year-filter');
+        if (yfDirect) {
+            yfDirect.onchange = function () {
+                populateFilters(false);
+                filterAndRender();
+            };
+        }
 
         function parseDate(dateStr) {
             if (!dateStr) return null;
