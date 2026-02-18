@@ -162,8 +162,32 @@
             if (!window.currentUser) return { success: false, error: "Not logged in" };
             const myRole = window.currentUser.role;
 
-            if (myRole !== 'admin') return { success: false, error: "Only admin can change roles" };
-            if (!window.usersDB[email]) return { success: false, error: "User not found" };
+            if (myRole === 'viewer') return { success: false, error: "No permission" };
+
+            const targetUser = window.usersDB[email];
+            if (!targetUser) return { success: false, error: "User not found" };
+
+            // 1. ADMIN RULES
+            if (myRole === 'admin') {
+                // Prevent Admin from demoting another Admin (to prevent lockout)
+                if (targetUser.role === 'admin' && newRole !== 'admin') {
+                    return { success: false, error: "Cannot demote another Admin" };
+                }
+            }
+
+            // 2. CENTRAL RULES
+            if (myRole === 'central') {
+                // Cannot modify Admins
+                if (targetUser.role === 'admin') return { success: false, error: "Cannot modify Admin users" };
+
+                // Can only Promote: Viewer -> Central
+                if (targetUser.role === 'viewer' && newRole === 'central') {
+                    // Allowed
+                } else {
+                    // Block everything else (Central -> Viewer, etc)
+                    return { success: false, error: "Can only promote Viewer to Central" };
+                }
+            }
 
             window.usersDB[email].role = newRole;
             window.saveUsers();
@@ -620,6 +644,15 @@
                 </div>
             </div>
             <div class="flex items-center gap-2 md:gap-3">
+                <!-- Year Filter -->
+                <div class="relative">
+                    <i class="fas fa-calendar absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 text-xs"></i>
+                    <select id="year-filter" onchange="filterAndRender()"
+                        class="bg-slate-50 border border-slate-200 text-slate-700 text-xs font-bold pl-8 pr-3 py-2 rounded-xl outline-none focus:ring-2 focus:ring-blue-500 appearance-none cursor-pointer hover:bg-slate-100 transition-colors">
+                        <option value="All">All Years</option>
+                    </select>
+                </div>
+
                 <!-- Month Filter -->
                 <div class="relative">
                     <i
@@ -719,10 +752,10 @@
         <!-- Secondary KPIs -->
         <section class="secondary-grid">
             <div class="kpi-card bg-slate-50 border-slate-200">
-                <span class="text-[9px] font-bold text-slate-400 uppercase">Avg. Realisation</span>
+                <span class="text-[9px] font-bold text-slate-400 uppercase">Avg. Price / Box</span>
                 <div class="flex items-baseline gap-1"><span id="kpi-global-rate"
                         class="text-lg font-bold text-slate-700">₹0</span><span class="text-[10px] text-slate-400">/
-                        Kg</span></div>
+                        Box</span></div>
             </div>
             <div class="kpi-card bg-slate-50 border-slate-200">
                 <span class="text-[9px] font-bold text-slate-400 uppercase">Top Source Market</span>
@@ -946,12 +979,13 @@
             // Use Crores for values >= 1 Crore (10 million)
             if (absValue >= 10000000) {
                 const crores = value / 10000000;
-                return `₹${crores.toFixed(crores >= 100 ? 0 : crores >= 10 ? 1 : 2)}Cr`;
+                // parseFloat(x.toFixed(2)) strips trailing zeros automatically
+                return `₹${parseFloat(crores.toFixed(2))}Cr`;
             }
             // Use Lakhs for values >= 1 Lakh (100,000)
             else if (absValue >= 100000) {
                 const lakhs = value / 100000;
-                return `₹${lakhs.toFixed(lakhs >= 100 ? 0 : lakhs >= 10 ? 1 : 2)}L`;
+                return `₹${parseFloat(lakhs.toFixed(2))}L`;
             }
             // Use compact format for smaller values
             else {
@@ -1161,13 +1195,55 @@
                     viewer: 'bg-slate-100 text-slate-600'
                 };
 
+                // Determine if dropdown should be enabled and what options to show
+                let roleOptions = [];
+                let isDisabled = true;
+
+                if (!isMe) {
+                    if (myRole === 'admin') {
+                        // Admin can see all, BUT cannot demote other admins
+                        if (user.role === 'admin') {
+                            isDisabled = true; // Cannot change other admins
+                            roleOptions = ['admin'];
+                        } else {
+                            isDisabled = false;
+                            roleOptions = ['admin', 'central', 'viewer'];
+                        }
+                    } else if (myRole === 'central') {
+                        // Central can only promote Viewer -> Central
+                        if (user.role === 'viewer') {
+                            isDisabled = false;
+                            roleOptions = ['central', 'viewer'];
+                        } else {
+                            isDisabled = true;
+                            // Show current role
+                            roleOptions = [user.role];
+                        }
+                    }
+                }
+
+                const roleDropdown = `
+                    <select onchange="handleRoleChange('${email}', this.value)" 
+                        class="text-[9px] font-bold rounded px-1 py-0.5 border border-slate-200 outline-none focus:border-blue-500 ${roleColors[user.role]} ${isDisabled ? 'opacity-70 cursor-not-allowed pointer-events-none' : 'cursor-pointer'}"
+                        ${isDisabled ? 'disabled' : ''}>
+                        ${roleOptions.map(r => `<option value="${r}" ${user.role === r ? 'selected' : ''}>${r.toUpperCase()}</option>`).join('')}
+                    </select>
+                `;
+
+                // Fallback for when no options or self (just show badge)
+                const roleBadge = `<span class="text-[9px] px-2 py-0.5 rounded-full font-bold ${roleColors[user.role]}">${user.role.toUpperCase()}</span>`;
+
+                const roleDisplay = (isMe || roleOptions.length === 0) ? roleBadge : roleDropdown;
+
                 return `
                     <div class="flex items-center justify-between p-3 bg-slate-50 rounded-xl border ${isMe ? 'border-blue-300' : 'border-slate-100'}">
                         <div class="flex-1 min-w-0">
                             <div class="text-xs font-bold text-slate-700 truncate">${email}</div>
-                            <span class="text-[9px] px-2 py-0.5 rounded-full font-bold ${roleColors[user.role]}">${user.role.toUpperCase()}</span>
-                            ${isMe ? '<span class="text-[9px] text-blue-500 font-bold ml-1">(You)</span>' : ''}
-                            ${user.mustChangePassword ? '<span class="text-[9px] text-amber-500 font-bold ml-1">• Must change password</span>' : ''}
+                            <div class="flex items-center mt-1">
+                                ${roleDisplay}
+                                ${isMe ? '<span class="text-[9px] text-blue-500 font-bold ml-1">(You)</span>' : ''}
+                                ${user.mustChangePassword ? '<span class="text-[9px] text-amber-500 font-bold ml-1">• Must change password</span>' : ''}
+                            </div>
                         </div>
                         ${!isMe ? `
                         <div class="flex gap-1">
@@ -1178,6 +1254,17 @@
                     </div>
                 `;
             }).join('');
+        }
+
+        function handleRoleChange(email, newRole) {
+            const result = window.updateUserRole(email, newRole);
+            if (result.success) {
+                window.showToast("User role updated!");
+                renderUsersList();
+            } else {
+                window.showToast(result.error);
+                renderUsersList(); // Re-render to revert selection
+            }
         }
 
         function handleAddUser() {
@@ -1631,7 +1718,39 @@
             } catch (e) {
                 console.error("All sync methods failed", e);
                 updateStatus('Sync Failed', 'bg-red-500');
-                if (!isBackground) window.showToast("Sync Error: " + e.message);
+                if (!isBackground) {
+                    if (window.location.protocol === 'file:') {
+                        // FALLBACK FOR LOCAL TESTING WITHOUT SERVER
+                        document.getElementById('empty-state').classList.remove('hidden');
+                        document.getElementById('empty-state').innerHTML = `
+                            <div class="max-w-md mx-auto">
+                                <div class="w-16 h-16 bg-red-50 text-red-500 rounded-full flex items-center justify-center mx-auto mb-4"><i class="fas fa-exclamation-triangle text-2xl"></i></div>
+                                <h3 class="text-lg font-bold text-slate-800 mb-2">Local File Mode Detected</h3>
+                                <p class="text-xs text-slate-500 mb-4">Browsers block external data when opening files directly. To test, paste your CSV data below:</p>
+                                <textarea id="manual-csv-paste" class="w-full h-32 p-3 border rounded-xl text-[10px] font-mono mb-3" placeholder="Paste CSV data here..."></textarea>
+                                <button onclick="handleManualPaste()" class="w-full py-3 bg-blue-600 text-white rounded-xl font-bold hover:bg-blue-700">Load Data</button>
+                            </div>
+                        `;
+                        window.handleManualPaste = () => {
+                            const text = document.getElementById('manual-csv-paste').value;
+                            if (text) {
+                                try {
+                                    const rows = parseCSV(text).slice(1);
+                                    window.rawData = rows;
+                                    populateMonthFilter(rows);
+                                    filterAndRender();
+                                    updateStatus('Manual Data Loaded', 'bg-emerald-500');
+                                    document.getElementById('empty-state').classList.add('hidden');
+                                    window.showToast("Data Loaded Manually!");
+                                } catch (err) {
+                                    window.showToast("Invalid CSV: " + err.message);
+                                }
+                            }
+                        };
+                    } else {
+                        window.showToast("Sync Error: " + e.message);
+                    }
+                }
             } finally { if (icon) icon.classList.remove('fa-spin'); }
         }
 
@@ -1669,14 +1788,13 @@
                 const newTargets = {};
                 const newDtTargets = {};
 
-                // Helper: Normalize Date strings
+                // Helper: Normalize Date strings to match target format (e.g., "Feb 2026")
                 const normalizeMonth = (mStr) => {
                     if (!mStr) return "";
-                    // Plain Text "Jan 2026" -> "January"
                     const m = mStr.trim();
+                    // Keep the original format if it already has year (e.g., "Feb 2026")
                     if (/\d{4}/.test(m)) {
-                        const d = new Date(Date.parse(m.replace(/(\d{4})/, "1, $1")));
-                        if (!isNaN(d)) return d.toLocaleString('en-US', { month: 'long' });
+                        return m; // Return as-is, already in "MonthAbbrev Year" format
                     }
                     return m;
                 };
@@ -1837,15 +1955,139 @@
         }
 
         function filterAndRender() {
-            const filter = document.getElementById('month-filter');
-            const val = filter.value;
+            const monthFilter = document.getElementById('month-filter');
+            const yearFilter = document.getElementById('year-filter');
+            const monthVal = monthFilter.value;
+            const yearVal = yearFilter.value;
 
             let data = window.rawData;
-            if (val !== 'All') {
-                data = window.rawData.filter(r => r[1]?.trim() === val);
+
+            // Filter by year first
+            if (yearVal !== 'All') {
+                data = data.filter(r => r[14]?.trim() === yearVal);
             }
+
+            // Then filter by month
+            if (monthVal !== 'All') {
+                data = data.filter(r => r[1]?.trim() === monthVal);
+            }
+
             renderDashboard(data);
         }
+
+        function populateFilters(selectedYearFilter = null, defaultToLatest = false) {
+            const monthFilter = document.getElementById('month-filter');
+            const yearFilter = document.getElementById('year-filter');
+
+            // Store current month selection to restore if possible
+            const currentMonthValue = monthFilter.value;
+
+            // Extract unique years and months from raw data
+            const years = new Set();
+            const yearMonthMap = {}; // Maps year -> Set of months
+
+            window.rawData.forEach(row => {
+                const year = row[14]?.trim();
+                const month = row[1]?.trim();
+                if (year && month) {
+                    years.add(year);
+                    if (!yearMonthMap[year]) {
+                        yearMonthMap[year] = new Set();
+                    }
+                    yearMonthMap[year].add(month);
+                    // Debug: Log if 2026 has unexpected months
+                    if (year === '2026' && month === 'December') {
+                        console.log('Found December 2026 in row:', row);
+                    }
+                }
+            });
+            console.log('Year-Month Map:', yearMonthMap);
+
+            // Store globally for later use
+            window.yearMonthMap = yearMonthMap;
+
+
+            // Populate year dropdown only once
+            if (yearFilter.options.length <= 1) {
+                yearFilter.innerHTML = '<option value="All">All Years</option>';
+
+                // Sort years in descending order (newest first)
+                const sortedYears = Array.from(years).sort((a, b) => b.localeCompare(a));
+
+                // Populate year dropdown
+                sortedYears.forEach(year => {
+                    const option = document.createElement('option');
+                    option.value = year;
+                    option.textContent = year;
+                    yearFilter.appendChild(option);
+                });
+
+                // Set default to most recent year
+                if (sortedYears.length > 0) {
+                    yearFilter.value = sortedYears[0];
+                    // Instead of recursion, simply update the current execution context
+                    selectedYearFilter = sortedYears[0];
+                    defaultToLatest = true;
+                }
+            }
+
+            // Determine which year to filter by
+            const filterYear = selectedYearFilter || yearFilter.value;
+
+            // Get months to show based on selected year
+            let monthsToShow = new Set();
+            if (filterYear === 'All') {
+                // Show all months across all years
+                Object.values(yearMonthMap).forEach(monthSet => {
+                    monthSet.forEach(month => monthsToShow.add(month));
+                });
+            } else {
+                // Show only months for selected year
+                monthsToShow = yearMonthMap[filterYear] || new Set();
+            }
+
+            // Clear and populate month dropdown
+            monthFilter.innerHTML = '<option value="All">All Months</option>';
+
+            // Month order for sorting
+            const monthOrder = ['January', 'February', 'March', 'April', 'May', 'June',
+                'July', 'August', 'September', 'October', 'November', 'December'];
+
+            // Sort months by calendar order
+            const sortedMonths = Array.from(monthsToShow).sort((a, b) => {
+                return monthOrder.indexOf(a) - monthOrder.indexOf(b);
+            });
+
+            // Populate month dropdown
+            sortedMonths.forEach(month => {
+                const option = document.createElement('option');
+                option.value = month;
+                option.textContent = month;
+                monthFilter.appendChild(option);
+            });
+
+            // Restore month selection if it's still available
+            if (sortedMonths.includes(currentMonthValue) && !defaultToLatest) {
+                monthFilter.value = currentMonthValue;
+            } else if (defaultToLatest && sortedMonths.length > 0) {
+                // Select the latest month (last in the sorted list)
+                monthFilter.value = sortedMonths[sortedMonths.length - 1];
+            } else {
+                monthFilter.value = 'All';
+            }
+        }
+
+        // Update year filter to trigger month repopulation on change
+        document.addEventListener('DOMContentLoaded', () => {
+            const yearFilter = document.getElementById('year-filter');
+            if (yearFilter) {
+                yearFilter.addEventListener('change', () => {
+                    populateFilters(yearFilter.value);
+                    filterAndRender(); // Re-render with new filters
+                });
+            }
+        });
+
 
         function parseDate(dateStr) {
             if (!dateStr) return null;
@@ -2069,10 +2311,43 @@
         }
 
         function renderDashboard(rows) {
+            // Populate year and month filters if not already done or if data changed
+            if (!window.filtersPopulated || window.lastDataLength !== window.rawData?.length) {
+                populateFilters();
+                window.filtersPopulated = true;
+                window.lastDataLength = window.rawData?.length;
+            }
+
             let tS = 0, tM = 0, tP = 0, tVol = 0, tOpenBox = 0, tClosedS = 0;
             const groups = {}, custs = {}, sourceMarkets = {}, corridors = {};
             const demandMatrix = {}; // Product -> Market -> {s, m, vol}
-            const dateFilter = document.getElementById('month-filter').value;
+
+            // Combine month and year filters to create dateFilter in "MonthAbbrev Year" format (e.g., "Feb 2026")
+            const monthVal = document.getElementById('month-filter').value;
+            const yearVal = document.getElementById('year-filter').value;
+
+            // Helper to convert full month name to abbreviation
+            const monthToAbbrev = (fullMonth) => {
+                const months = {
+                    'January': 'Jan', 'February': 'Feb', 'March': 'Mar', 'April': 'Apr',
+                    'May': 'May', 'June': 'Jun', 'July': 'Jul', 'August': 'Aug',
+                    'September': 'Sep', 'October': 'Oct', 'November': 'Nov', 'December': 'Dec'
+                };
+                return months[fullMonth] || fullMonth;
+            };
+
+            let dateFilter = 'All Months';
+            if (monthVal !== 'All' && yearVal !== 'All') {
+                // Both month and year selected: "Feb 2026"
+                dateFilter = `${monthToAbbrev(monthVal)} ${yearVal}`;
+            } else if (monthVal !== 'All') {
+                // Only month selected: use just month abbreviation for partial matching
+                dateFilter = monthToAbbrev(monthVal);
+            } else if (yearVal !== 'All') {
+                // Only year selected: use just year for partial matching
+                dateFilter = yearVal;
+            }
+
             const dailySales = {}; // Date -> Sales
             const clean = v => parseFloat(v?.replace(/[^\d.-]/g, '')) || 0;
 
@@ -2280,13 +2555,13 @@
             document.getElementById('total-potential-rev').innerText = compactRupee.format(tClosedS + proj);
 
             // Secondary Metrics Logic
-            const globalRate = tVol ? (tS / (tVol * 10)) : 0;
+            const globalRate = tVol ? (tS / tVol) : 0;
             document.getElementById('kpi-global-rate').innerText = "₹" + globalRate.toFixed(1);
 
             // Find Best Source Market
             let bestMarket = { name: "-", rate: 0 };
             Object.entries(sourceMarkets).forEach(([name, d]) => {
-                const rate = d.b ? (d.s / (d.b * 10)) : 0;
+                const rate = d.b ? (d.s / d.b) : 0;
                 if (rate > bestMarket.rate && d.b > 50) {
                     bestMarket = { name, rate };
                 }
@@ -2407,55 +2682,56 @@
                 const db = window.dbState.dtTargets;
                 if (!db) return { sales: 0, margin: 0, boxes: 0 };
 
+                // Helper: Get matching month keys from db based on dateFilter
+                // Supports exact match (e.g., "Feb 2026"), partial match (e.g., "Feb" or "2026"), or all
+                const getMatchingMonthKeys = () => {
+                    if (dateFilter === 'All Months') {
+                        return Object.keys(db);
+                    }
+
+                    // Check for exact match first
+                    if (db[dateFilter]) {
+                        return [dateFilter];
+                    }
+
+                    // Partial match: filter keys that contain the dateFilter
+                    // E.g., dateFilter="Feb" matches "Feb 2025", "Feb 2026"
+                    // E.g., dateFilter="2026" matches "Feb 2026", "Mar 2026"
+                    return Object.keys(db).filter(key => {
+                        if (dateFilter === 'All Months') return true;
+                        // Check if the key contains the filter (works for month-only or year-only)
+                        return key.includes(dateFilter);
+                    });
+                };
+
                 // Special handling for "KP Trades" - aggregate all non-Pomo "Known Party" targets for this market
                 if (prod === 'KP Trades') {
                     let s = 0, m = 0, b = 0;
 
-                    if (dateFilter !== 'All Months') {
-                        // Single month
-                        if (db[dateFilter]) {
-                            Object.keys(db[dateFilter]).forEach(product => {
-                                // Skip Pomegranate (goes to Pomo KP)
-                                if (product === 'Pomegranate') return;
+                    // Use helper to get matching month keys (handles exact, partial, or all matches)
+                    const matchingMonths = getMatchingMonthKeys();
+                    matchingMonths.forEach(monthKey => {
+                        const monthData = db[monthKey];
+                        Object.keys(monthData).forEach(product => {
+                            // Skip Pomegranate (goes to Pomo KP)
+                            if (product === 'Pomegranate') return;
 
-                                const marketsData = db[dateFilter][product];
-                                Object.keys(marketsData).forEach(key => {
-                                    const target = marketsData[key];
-                                    // Check if Type is "Known Party" and market matches
-                                    if (target.type && target.type.toLowerCase().includes('known')) {
-                                        // Check if this target is for our market
-                                        const targetMarket = key.includes('::') ? key.split('::')[0] : key;
-                                        if (targetMarket === mkt) {
-                                            s += target.sales || 0;
-                                            m += target.margin || 0;
-                                            b += target.boxes || 0;
-                                        }
+                            const marketsData = monthData[product];
+                            Object.keys(marketsData).forEach(key => {
+                                const target = marketsData[key];
+                                // Check if Type is "Known Party" and market matches
+                                if (target.type && target.type.toLowerCase().includes('known')) {
+                                    // Check if this target is for our market
+                                    const targetMarket = key.includes('::') ? key.split('::')[0] : key;
+                                    if (targetMarket === mkt) {
+                                        s += target.sales || 0;
+                                        m += target.margin || 0;
+                                        b += target.boxes || 0;
                                     }
-                                });
-                            });
-                        }
-                    } else {
-                        // All months
-                        Object.values(db).forEach(monthData => {
-                            Object.keys(monthData).forEach(product => {
-                                // Skip Pomegranate
-                                if (product === 'Pomegranate') return;
-
-                                const marketsData = monthData[product];
-                                Object.keys(marketsData).forEach(key => {
-                                    const target = marketsData[key];
-                                    if (target.type && target.type.toLowerCase().includes('known')) {
-                                        const targetMarket = key.includes('::') ? key.split('::')[0] : key;
-                                        if (targetMarket === mkt) {
-                                            s += target.sales || 0;
-                                            m += target.margin || 0;
-                                            b += target.boxes || 0;
-                                        }
-                                    }
-                                });
+                                }
                             });
                         });
-                    }
+                    });
 
                     return { sales: s, margin: m, boxes: b };
                 }
@@ -2464,11 +2740,13 @@
                 if (prod === 'Pomegranate' && mkt === 'Pomo KP') {
                     let s = 0, m = 0, b = 0;
 
-                    if (dateFilter !== 'All Months') {
-                        // Single month
-                        if (db[dateFilter] && db[dateFilter]['Pomegranate']) {
-                            Object.keys(db[dateFilter]['Pomegranate']).forEach(key => {
-                                const target = db[dateFilter]['Pomegranate'][key];
+                    // Use helper to get matching month keys
+                    const matchingMonths = getMatchingMonthKeys();
+                    matchingMonths.forEach(monthKey => {
+                        const monthData = db[monthKey];
+                        if (monthData['Pomegranate']) {
+                            Object.keys(monthData['Pomegranate']).forEach(key => {
+                                const target = monthData['Pomegranate'][key];
                                 if (target.type && target.type.toLowerCase().includes('known')) {
                                     s += target.sales || 0;
                                     m += target.margin || 0;
@@ -2476,42 +2754,30 @@
                                 }
                             });
                         }
-                    } else {
-                        // All months
-                        Object.values(db).forEach(monthData => {
-                            if (monthData['Pomegranate']) {
-                                Object.keys(monthData['Pomegranate']).forEach(key => {
-                                    const target = monthData['Pomegranate'][key];
-                                    if (target.type && target.type.toLowerCase().includes('known')) {
-                                        s += target.sales || 0;
-                                        m += target.margin || 0;
-                                        b += target.boxes || 0;
-                                    }
-                                });
-                            }
-                        });
-                    }
+                    });
 
                     return { sales: s, margin: m, boxes: b };
                 }
 
-                if (dateFilter !== 'All Months') {
-                    // First, try to get direct market target (no customer)
-                    const directTarget = (db[dateFilter] && db[dateFilter][prod] && db[dateFilter][prod][mkt])
-                        ? db[dateFilter][prod][mkt]
-                        : null;
+                // For regular products: aggregate targets across matching months
+                let s = 0, m = 0, b = 0;
+                const matchingMonths = getMatchingMonthKeys();
 
-                    if (directTarget) {
-                        return directTarget;
-                    }
+                matchingMonths.forEach(monthKey => {
+                    const monthData = db[monthKey];
+                    if (monthData && monthData[prod]) {
+                        // First check for direct market target
+                        if (monthData[prod][mkt]) {
+                            const target = monthData[prod][mkt];
+                            s += target.sales || 0;
+                            m += target.margin || 0;
+                            b += target.boxes || 0;
+                        }
 
-                    // If no direct market target, aggregate all customer targets for this market
-                    let s = 0, m = 0, b = 0;
-                    if (db[dateFilter] && db[dateFilter][prod]) {
-                        Object.keys(db[dateFilter][prod]).forEach(key => {
-                            // Check if key starts with "market::" (customer-level target)
+                        // Also aggregate customer-level targets
+                        Object.keys(monthData[prod]).forEach(key => {
                             if (key.startsWith(mkt + '::')) {
-                                const target = db[dateFilter][prod][key];
+                                const target = monthData[prod][key];
                                 // EXCLUDE Known Party targets (they go to KP section only)
                                 if (target.type && target.type.toLowerCase().includes('known')) {
                                     return; // Skip this target
@@ -2522,36 +2788,9 @@
                             }
                         });
                     }
+                });
 
-                    return { sales: s, margin: m, boxes: b };
-                } else {
-                    // "All Months" - sum across all months
-                    let s = 0, m = 0, b = 0;
-                    Object.values(db).forEach(monthData => {
-                        if (monthData[prod]) {
-                            // Direct market target
-                            if (monthData[prod][mkt]) {
-                                s += monthData[prod][mkt].sales || 0;
-                                m += monthData[prod][mkt].margin || 0;
-                                b += monthData[prod][mkt].boxes || 0;
-                            }
-                            // Aggregate customer targets for this market
-                            Object.keys(monthData[prod]).forEach(key => {
-                                if (key.startsWith(mkt + '::')) {
-                                    const target = monthData[prod][key];
-                                    // EXCLUDE Known Party targets (they go to KP section only)
-                                    if (target.type && target.type.toLowerCase().includes('known')) {
-                                        return; // Skip this target
-                                    }
-                                    s += target.sales || 0;
-                                    m += target.margin || 0;
-                                    b += target.boxes || 0;
-                                }
-                            });
-                        }
-                    });
-                    return { sales: s, margin: m, boxes: b };
-                }
+                return { sales: s, margin: m, boxes: b };
             };
 
             // --- RENDER DEMAND MATRIX ---
