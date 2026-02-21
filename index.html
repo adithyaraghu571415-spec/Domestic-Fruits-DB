@@ -1398,8 +1398,36 @@
             });
 
             // Get Targets (Market & Customer)
-            const month = document.getElementById('month-filter').value;
+            // Build the correct abbreviated month key matching dtTargets format (e.g., "Feb 2026")
+            const monthVal = document.getElementById('month-filter').value;
+            const yearVal = document.getElementById('year-filter').value;
+            const monthAbbrevMap = {
+                'January': 'Jan', 'February': 'Feb', 'March': 'Mar', 'April': 'Apr',
+                'May': 'May', 'June': 'Jun', 'July': 'Jul', 'August': 'Aug',
+                'September': 'Sep', 'October': 'Oct', 'November': 'Nov', 'December': 'Dec'
+            };
+            // Build matching month key (or null for "All")
+            let targetMonthKey = null;
+            if (monthVal !== 'All' && yearVal !== 'All') {
+                targetMonthKey = `${monthAbbrevMap[monthVal] || monthVal} ${yearVal}`;
+            }
             const db = window.dbState.dtTargets;
+
+            // Helper: get matching month objects from db based on filter
+            const getMatchingDbMonths = () => {
+                if (!db) return [];
+                if (targetMonthKey) {
+                    return db[targetMonthKey] ? [db[targetMonthKey]] : [];
+                } else if (yearVal !== 'All') {
+                    // Match all months in this year
+                    return Object.entries(db)
+                        .filter(([k]) => k.endsWith(yearVal))
+                        .map(([, v]) => v);
+                } else {
+                    // All time
+                    return Object.values(db);
+                }
+            };
 
             // Render Table
             summaryContainer.innerHTML = `
@@ -1417,17 +1445,18 @@
                         ${Object.entries(custStats).sort((a, b) => b[1].s - a[1].s).map(([c, d]) => {
                 const yieldPct = d.s ? (d.m / d.s * 100) : 0;
 
-                // Customer Target
+                // Customer Target — aggregate across matching months
                 let cTarget = null;
-                if (db && db[month]) {
+                const matchingMonths = getMatchingDbMonths();
+                matchingMonths.forEach(monthData => {
                     if (prod === 'KP Trades') {
                         // For KP Trades, search across all products (except Pomegranate) where Type='Known Party'
-                        Object.keys(db[month]).forEach(product => {
+                        Object.keys(monthData).forEach(product => {
                             if (product === 'Pomegranate') return;
 
                             const customerKey = `${mkt}::${c}`;
-                            if (db[month][product][customerKey]) {
-                                const target = db[month][product][customerKey];
+                            if (monthData[product][customerKey]) {
+                                const target = monthData[product][customerKey];
                                 if (target.type && target.type.toLowerCase().includes('known')) {
                                     // Found matching customer target
                                     if (!cTarget) {
@@ -1439,10 +1468,17 @@
                                 }
                             }
                         });
-                    } else if (db[month][prod]) {
-                        cTarget = db[month][prod][`${mkt}::${c}`];
+                    } else if (monthData[prod]) {
+                        const key = `${mkt}::${c}`;
+                        if (monthData[prod][key]) {
+                            const t = monthData[prod][key];
+                            if (!cTarget) cTarget = { sales: 0, margin: 0, boxes: 0 };
+                            cTarget.sales += t.sales || 0;
+                            cTarget.margin += t.margin || 0;
+                            cTarget.boxes += t.boxes || 0;
+                        }
                     }
-                }
+                });
 
                 // Sales column with target
                 let salesHtml = `<div class="w-32"><div class="text-[11px] font-bold">${compactRupee.format(d.s)}</div>`;
@@ -1572,27 +1608,37 @@
             document.getElementById('modal-table-container').classList.remove('hidden');
             document.getElementById('modal-summary-container').classList.add('hidden');
 
-            // Filter raw data (No Date Filter - All data passes)
-            // Use current global filter
-            // Filter raw data (No Date Filter - All data passes)
-            // Use current global filter
-            const dateFilter = document.getElementById('date-filter');
-            const dateVal = dateFilter ? dateFilter.value : 'All';
+            // Filter raw data using current Year + Month filter
+            const monthFilter = document.getElementById('month-filter');
+            const yearFilter = document.getElementById('year-filter');
+            const monthVal = monthFilter ? monthFilter.value : 'All';
+            const yearVal = yearFilter ? yearFilter.value : 'All';
+
             let currentData = window.rawData;
 
-            if (dateVal !== 'All') {
-                const parts = dateVal.split(' ');
-                const month = parts[0];
-                const year = parts[1];
-                currentData = window.rawData.filter(r => r[1]?.trim() === month && r[14]?.trim() === year);
+            if (yearVal !== 'All') {
+                currentData = currentData.filter(r => r[14]?.trim() === yearVal);
+            }
+            if (monthVal !== 'All') {
+                currentData = currentData.filter(r => r[1]?.trim() === monthVal);
             }
 
-            const filteredRows = currentData.filter(row => {
+            let filteredRows = currentData.filter(row => {
                 const rowOwner = getOwner(row);
                 return rowOwner === owner;
             });
 
-            body.innerHTML = filteredRows.length ? '' : '<tr><td colspan="6" class="p-4 text-center text-slate-400">No records found.</td></tr>';
+            // Sort by closure date (dispatch date in col[0]) — newest first
+            filteredRows = filteredRows.slice().sort((a, b) => {
+                const dA = parseDate(a[0]);
+                const dB = parseDate(b[0]);
+                if (!dA && !dB) return 0;
+                if (!dA) return 1;
+                if (!dB) return -1;
+                return dB - dA;
+            });
+
+            body.innerHTML = filteredRows.length ? '' : '<tr><td colspan="7" class="p-4 text-center text-slate-400">No records found for the selected filter.</td></tr>';
 
             filteredRows.forEach(row => {
                 const closureDate = row[1] || '-';
@@ -1605,8 +1651,8 @@
 
                 body.insertAdjacentHTML('beforeend', `
                     <tr class="hover:bg-slate-50">
-                        <td class="p-3 border-b">${closureDate}</td>
-                        <td class="p-3 border-b text-slate-400">${dispatchDate}</td>
+                        <td class="p-3 border-b">${dispatchDate}</td>
+                        <td class="p-3 border-b text-slate-400">${closureDate}</td>
                         <td class="p-3 border-b font-bold">${cust}</td>
                         <td class="p-3 border-b text-slate-500">${mark}</td>
                         <td class="p-3 border-b text-right">${boxes.toLocaleString()}</td>
