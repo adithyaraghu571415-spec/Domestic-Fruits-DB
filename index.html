@@ -1671,38 +1671,45 @@
 
         function getOwner(row) {
             const mode = row[4]?.trim().toLowerCase() || "";
+            const isKnown = mode.includes("known") || (row[5] && row[5].toLowerCase().includes("known"));
+            const dtMarket = row[3]?.trim().toLowerCase() || "";
             const mark = row[10]?.trim() || "";
             const market = row[11]?.trim() || "";
-            const isKnown = mode.includes("known") || (row[5] && row[5].toLowerCase().includes("known"));
 
             // 1. GLOBAL EXCLUSION: POMO NW / E variants
-            // These are hidden from the matrix completely (marked as EXCLUDED)
-            // regardless of whether they are Known Party or Trade.
             if (mark.toUpperCase().includes("POMO")) {
-                const mUp = mark.toUpperCase().replace(/\s+/g, ''); // Remove spaces for comparison
-                // Matches variants of: NW, E, NW&E
+                const mUp = mark.toUpperCase().replace(/\s+/g, '');
                 if (mUp.includes("NW") || mUp.includes("&E") || mUp.endsWith("E") || mUp === "POMOE") {
                     return "EXCLUDED";
                 }
             }
 
-            // 2. Known Party Logic (Central / Kishore)
+            // 2. Known Party Logic
             if (mark === "Mango" || (mark === "Apple" && isKnown)) return "Central (Known Party)";
             if (mark.includes("POMO") && isKnown) return "Kishore (Known Party)";
 
-            // 3. Specific Marks
-            if (mark === "Apple") return "Amit / Bharath";
-            if (mark === "Kinnow") return "Amit";
+            // 3. Amith (Apple & Kinnow)
+            if (mark === "Apple") return "Amith";
+            if (mark === "Kinnow") return "Amith";
 
-            // 4. Remaining POMO Logic (Karan / Kishore)
+            // 4. POMO Logic
             if (mark.includes("POMO")) {
+                // Bharath: Non-South DT Markets
+                const southMarkets = ["bengaluru", "chennai", "hyderabad", "madurai", "panruti", "cochin", "coimbatore"];
+                const isSouth = southMarkets.some(loc => dtMarket.includes(loc));
+
+                if (!isSouth) {
+                    return "Bharath";
+                }
+
+                // Karan / Kishore: South DT Markets
                 if (market === "Rajasthan" || market === "Gujarat") return "Karan";
                 return "Kishore";
             }
 
             // 5. Catch-all
             return mark || "Others";
-        }
+        }        }
 
         async function fetchCSVData(isBackground) {
             const url = window.dbState.csvUrl;
@@ -2620,10 +2627,31 @@
             updateSourceChart();
             renderDispatchChart(rows);
 
+            const calcYield = tS ? (tM / tS * 100) : 0;
+            const globalRate = tVol ? (tS / tVol) : 0;
+
+            // Extract targets from current Owner assignments mappings to use in KPIs
+            let tSTarget = 0;
+            let tMTarget = 0;
+            if (dateFilter !== 'All Months' && window.dbState.targets && window.dbState.targets[dateFilter]) {
+                const dbM = window.dbState.targets[dateFilter];
+                Object.values(dbM).forEach(ownerData => {
+                    tSTarget += (ownerData.sales || 0) * 100000;
+                    tMTarget += (ownerData.margin || 0) * 100000;
+                });
+            } else if (dateFilter === 'All Months' && window.dbState.targets) {
+                Object.values(window.dbState.targets).forEach(dbM => {
+                    Object.values(dbM).forEach(ownerData => {
+                        tSTarget += (ownerData.sales || 0) * 100000;
+                        tMTarget += (ownerData.margin || 0) * 100000;
+                    });
+                });
+            }
+
             // Top Stats (Compact)
-            document.getElementById('mtd-sales').innerText = compactRupee.format(tClosedS);
-            document.getElementById('mtd-margin').innerText = compactRupee.format(tM);
-            document.getElementById('margin-pct').innerText = (tS ? (tM / tS * 100).toFixed(1) : 0) + '%';
+            document.getElementById('mtd-sales').innerHTML = `${compactRupee.format(tClosedS)} <span class="text-xs text-slate-400 font-semibold">/ ${formatLakhsCrores(tSTarget)} Goal</span>`;
+            document.getElementById('mtd-margin').innerHTML = `${compactRupee.format(tM)} <span class="text-xs text-slate-400 font-semibold">/ ${formatLakhsCrores(tMTarget)} Goal</span>`;
+            document.getElementById('margin-pct').innerHTML = `${(tS ? (tM / tS * 100) : 0).toFixed(1)}% <span class="text-xs text-slate-400 font-semibold">/ 3.50% Goal</span>`;
 
             // Projected (Compact)
             document.getElementById('total-open-boxes').innerText = tOpenBox.toLocaleString();
@@ -2632,7 +2660,6 @@
             document.getElementById('total-potential-rev').innerText = compactRupee.format(tClosedS + proj);
 
             // Secondary Metrics Logic
-            const globalRate = tVol ? (tS / tVol) : 0;
             document.getElementById('kpi-global-rate').innerText = "₹" + globalRate.toFixed(1);
 
             // Find Best Source Market
@@ -2678,35 +2705,22 @@
                 }
             };
 
-            // Calculate Totals for Ownership Header
-            let totalOwnerSalesTarget = 0, totalOwnerMarginTarget = 0;
-            let totalOwnerClosedBox = 0;
-
-            sortedOwners.forEach(owner => {
-                const t = getOwnerTarget(owner);
-                totalOwnerSalesTarget += (t.sales || 0) * 100000;
-                totalOwnerMarginTarget += (t.margin || 0) * 100000;
-
-                if (groups[owner]) {
-                    totalOwnerClosedBox += groups[owner].closedBox;
-                }
+            const sortedOwners = Object.keys(groups).sort((a, b) => {
+                const iA = OWNER_ORDER.indexOf(a), iB = OWNER_ORDER.indexOf(b);
+                return (iA === -1 ? 99 : iA) - (iB === -1 ? 99 : iB);
             });
+            const d = groups[owner];
+            if (d.s === 0 && d.m === 0 && d.closedBox === 0 && d.openBox === 0) return;
 
+            const t = getOwnerTarget(owner);
+            const eff = d.s ? (d.m / d.s * 100) : 0;
+            const sPct = (t.sales * 100000) ? Math.min((d.s / (t.sales * 100000) * 100), 100) : 0;
+            const mPct = (t.margin * 100000) ? Math.min((d.m / (t.margin * 100000) * 100), 100) : 0;
 
+            const nameDisplay = owner.includes('Known') ? `<span>${owner.split(' (')[0]}</span><br><span class="text-[8px] text-blue-500 font-bold uppercase">Known Party</span>` : owner;
+            const rowClass = "border-b border-slate-100 last:border-0 clickable-row";
 
-            sortedOwners.forEach(owner => {
-                const d = groups[owner];
-                if (d.s === 0 && d.m === 0 && d.closedBox === 0 && d.openBox === 0) return;
-
-                const t = getOwnerTarget(owner);
-                const eff = d.s ? (d.m / d.s * 100) : 0;
-                const sPct = (t.sales * 100000) ? Math.min((d.s / (t.sales * 100000) * 100), 100) : 0;
-                const mPct = (t.margin * 100000) ? Math.min((d.m / (t.margin * 100000) * 100), 100) : 0;
-
-                const nameDisplay = owner.includes('Known') ? `<span>${owner.split(' (')[0]}</span><br><span class="text-[8px] text-blue-500 font-bold uppercase">Known Party</span>` : owner;
-                const rowClass = "border-b border-slate-100 last:border-0 clickable-row";
-
-                tbody.insertAdjacentHTML('beforeend', `
+            tbody.insertAdjacentHTML('beforeend', `
                     <tr class="${rowClass}" onclick="showDrillDown('${owner}')">
                         <td class="px-6 py-5 align-top"><span class="text-sm font-extrabold text-slate-800">${nameDisplay}</span></td>
                         <td class="px-6 py-5 align-top text-center">
@@ -2737,128 +2751,94 @@
                             <div class="text-[8px] text-slate-400 font-bold uppercase">Target: ${t.marginPct || 0}%</div>
                         </td>
                 `);
-            });
+        });
 
-            // Demand Matrix Rendering
-            // Populate Product Filter
-            const dmFilter = document.getElementById('demand-matrix-product-filter');
-            const availableProducts = Object.keys(demandMatrix).sort();
+        // Demand Matrix Rendering
+        // Populate Product Filter
+        const dmFilter = document.getElementById('demand-matrix-product-filter');
+        const availableProducts = Object.keys(demandMatrix).sort();
 
-            // Retain selection or Default to Pomegranate
-            let dmSelected = dmFilter.value;
-            dmFilter.innerHTML = '';
-            availableProducts.forEach(p => dmFilter.add(new Option(p, p)));
+        // Retain selection or Default to Pomegranate
+        let dmSelected = dmFilter.value;
+        dmFilter.innerHTML = '';
+        availableProducts.forEach(p => dmFilter.add(new Option(p, p)));
 
-            if (!availableProducts.includes(dmSelected)) {
-                if (availableProducts.includes("Pomegranate")) dmSelected = "Pomegranate";
-                else dmSelected = availableProducts[0];
-            }
-            if (dmSelected) dmFilter.value = dmSelected;
+        if (!availableProducts.includes(dmSelected)) {
+            if (availableProducts.includes("Pomegranate")) dmSelected = "Pomegranate";
+            else dmSelected = availableProducts[0];
+        }
+        if (dmSelected) dmFilter.value = dmSelected;
 
-            const getDemandTarget = (prod, mkt) => {
-                const db = window.dbState.dtTargets;
-                if (!db) return { sales: 0, margin: 0, boxes: 0 };
+        const getDemandTarget = (prod, mkt) => {
+            const db = window.dbState.dtTargets;
+            if (!db) return { sales: 0, margin: 0, boxes: 0 };
 
-                // Helper: Get matching month keys from db based on dateFilter
-                // Supports exact match (e.g., "Feb 2026"), partial match (e.g., "Feb" or "2026"), or all
-                const getMatchingMonthKeys = () => {
-                    if (dateFilter === 'All Months') {
-                        return Object.keys(db);
-                    }
-
-                    // Check for exact match first
-                    if (db[dateFilter]) {
-                        return [dateFilter];
-                    }
-
-                    // Partial match: filter keys that contain the dateFilter
-                    // E.g., dateFilter="Feb" matches "Feb 2025", "Feb 2026"
-                    // E.g., dateFilter="2026" matches "Feb 2026", "Mar 2026"
-                    return Object.keys(db).filter(key => {
-                        if (dateFilter === 'All Months') return true;
-                        // Check if the key contains the filter (works for month-only or year-only)
-                        return key.includes(dateFilter);
-                    });
-                };
-
-                // Special handling for "KP Trades" - aggregate all non-Pomo "Known Party" targets for this market
-                if (prod === 'KP Trades') {
-                    let s = 0, m = 0, b = 0;
-
-                    // Use helper to get matching month keys (handles exact, partial, or all matches)
-                    const matchingMonths = getMatchingMonthKeys();
-                    matchingMonths.forEach(monthKey => {
-                        const monthData = db[monthKey];
-                        Object.keys(monthData).forEach(product => {
-                            // Skip Pomegranate (goes to Pomo KP)
-                            if (product === 'Pomegranate') return;
-
-                            const marketsData = monthData[product];
-                            Object.keys(marketsData).forEach(key => {
-                                const target = marketsData[key];
-                                // Check if Type is "Known Party" and market matches
-                                if (target.type && target.type.toLowerCase().includes('known')) {
-                                    // Check if this target is for our market
-                                    const targetMarket = key.includes('::') ? key.split('::')[0] : key;
-                                    if (targetMarket === mkt) {
-                                        s += target.sales || 0;
-                                        m += target.margin || 0;
-                                        b += target.boxes || 0;
-                                    }
-                                }
-                            });
-                        });
-                    });
-
-                    return { sales: s, margin: m, boxes: b };
+            // Helper: Get matching month keys from db based on dateFilter
+            // Supports exact match (e.g., "Feb 2026"), partial match (e.g., "Feb" or "2026"), or all
+            const getMatchingMonthKeys = () => {
+                if (dateFilter === 'All Months') {
+                    return Object.keys(db);
                 }
 
-                // Special handling for "Pomo KP" - aggregate all Pomegranate "Known Party" targets
-                if (prod === 'Pomegranate' && mkt === 'Pomo KP') {
-                    let s = 0, m = 0, b = 0;
+                // Check for exact match first
+                if (db[dateFilter]) {
+                    return [dateFilter];
+                }
 
-                    // Use helper to get matching month keys
-                    const matchingMonths = getMatchingMonthKeys();
-                    matchingMonths.forEach(monthKey => {
-                        const monthData = db[monthKey];
-                        if (monthData['Pomegranate']) {
-                            Object.keys(monthData['Pomegranate']).forEach(key => {
-                                const target = monthData['Pomegranate'][key];
-                                if (target.type && target.type.toLowerCase().includes('known')) {
+                // Partial match: filter keys that contain the dateFilter
+                // E.g., dateFilter="Feb" matches "Feb 2025", "Feb 2026"
+                // E.g., dateFilter="2026" matches "Feb 2026", "Mar 2026"
+                return Object.keys(db).filter(key => {
+                    if (dateFilter === 'All Months') return true;
+                    // Check if the key contains the filter (works for month-only or year-only)
+                    return key.includes(dateFilter);
+                });
+            };
+
+            // Special handling for "KP Trades" - aggregate all non-Pomo "Known Party" targets for this market
+            if (prod === 'KP Trades') {
+                let s = 0, m = 0, b = 0;
+
+                // Use helper to get matching month keys (handles exact, partial, or all matches)
+                const matchingMonths = getMatchingMonthKeys();
+                matchingMonths.forEach(monthKey => {
+                    const monthData = db[monthKey];
+                    Object.keys(monthData).forEach(product => {
+                        // Skip Pomegranate (goes to Pomo KP)
+                        if (product === 'Pomegranate') return;
+
+                        const marketsData = monthData[product];
+                        Object.keys(marketsData).forEach(key => {
+                            const target = marketsData[key];
+                            // Check if Type is "Known Party" and market matches
+                            if (target.type && target.type.toLowerCase().includes('known')) {
+                                // Check if this target is for our market
+                                const targetMarket = key.includes('::') ? key.split('::')[0] : key;
+                                if (targetMarket === mkt) {
                                     s += target.sales || 0;
                                     m += target.margin || 0;
                                     b += target.boxes || 0;
                                 }
-                            });
-                        }
+                            }
+                        });
                     });
+                });
 
-                    return { sales: s, margin: m, boxes: b };
-                }
+                return { sales: s, margin: m, boxes: b };
+            }
 
-                // For regular products: aggregate targets across matching months
+            // Special handling for "Pomo KP" - aggregate all Pomegranate "Known Party" targets
+            if (prod === 'Pomegranate' && mkt === 'Pomo KP') {
                 let s = 0, m = 0, b = 0;
-                const matchingMonths = getMatchingMonthKeys();
 
+                // Use helper to get matching month keys
+                const matchingMonths = getMatchingMonthKeys();
                 matchingMonths.forEach(monthKey => {
                     const monthData = db[monthKey];
-                    if (monthData && monthData[prod]) {
-                        // First check for direct market target
-                        if (monthData[prod][mkt]) {
-                            const target = monthData[prod][mkt];
-                            s += target.sales || 0;
-                            m += target.margin || 0;
-                            b += target.boxes || 0;
-                        }
-
-                        // Also aggregate customer-level targets
-                        Object.keys(monthData[prod]).forEach(key => {
-                            if (key.startsWith(mkt + '::')) {
-                                const target = monthData[prod][key];
-                                // EXCLUDE Known Party targets (they go to KP section only)
-                                if (target.type && target.type.toLowerCase().includes('known')) {
-                                    return; // Skip this target
-                                }
+                    if (monthData['Pomegranate']) {
+                        Object.keys(monthData['Pomegranate']).forEach(key => {
+                            const target = monthData['Pomegranate'][key];
+                            if (target.type && target.type.toLowerCase().includes('known')) {
                                 s += target.sales || 0;
                                 m += target.margin || 0;
                                 b += target.boxes || 0;
@@ -2868,108 +2848,157 @@
                 });
 
                 return { sales: s, margin: m, boxes: b };
-            };
-
-            // --- RENDER DEMAND MATRIX ---
-            const dmContainer = document.getElementById('demand-matrix-container'); // The Title ID
-            const dmBody = document.getElementById('demand-matrix-body');
-            dmBody.innerHTML = '';
-
-            const selectedProd = document.getElementById('demand-matrix-product-filter').value; // Use the actual filter ID
-            let demandRows = [];
-
-            // Filter by Selected Product (and aggregate header stats)
-            let headerSales = 0, headerMargin = 0, headerVol = 0;
-
-            // NEW: Populate demandRows from BOTH Actuals and Targets
-            const allProds = new Set(Object.keys(demandMatrix));
-
-            // Add Products from Targets
-            if (window.dbState.dtTargets && window.dbState.dtTargets[dateFilter]) {
-                Object.keys(window.dbState.dtTargets[dateFilter]).forEach(p => allProds.add(p));
             }
 
-            allProds.forEach(prod => {
-                if (selectedProd !== 'All Products' && prod !== selectedProd) return;
+            // For regular products: aggregate targets across matching months
+            let s = 0, m = 0, b = 0;
+            const matchingMonths = getMatchingMonthKeys();
 
-                const markets = demandMatrix[prod] || {};
-                const allMkts = new Set(Object.keys(markets));
+            matchingMonths.forEach(monthKey => {
+                const monthData = db[monthKey];
+                if (monthData && monthData[prod]) {
+                    // First check for direct market target
+                    if (monthData[prod][mkt]) {
+                        const target = monthData[prod][mkt];
+                        s += target.sales || 0;
+                        m += target.margin || 0;
+                        b += target.boxes || 0;
+                    }
 
-                // Special handling for KP Trades - extract markets from all products with Type='Known Party'
-                if (prod === 'KP Trades' && window.dbState.dtTargets && window.dbState.dtTargets[dateFilter]) {
+                    // Also aggregate customer-level targets
+                    Object.keys(monthData[prod]).forEach(key => {
+                        if (key.startsWith(mkt + '::')) {
+                            const target = monthData[prod][key];
+                            // EXCLUDE Known Party targets (they go to KP section only)
+                            if (target.type && target.type.toLowerCase().includes('known')) {
+                                return; // Skip this target
+                            }
+                            s += target.sales || 0;
+                            m += target.margin || 0;
+                            b += target.boxes || 0;
+                        }
+                    });
+                }
+            });
+
+            return { sales: s, margin: m, boxes: b };
+        };
+
+        // --- RENDER DEMAND MATRIX ---
+        const dmContainer = document.getElementById('demand-matrix-container'); // The Title ID
+        const dmBody = document.getElementById('demand-matrix-body');
+        dmBody.innerHTML = '';
+
+        const selectedProd = document.getElementById('demand-matrix-product-filter').value; // Use the actual filter ID
+        let demandRows = [];
+
+        // Filter by Selected Product (and aggregate header stats)
+        let headerSales = 0, headerMargin = 0, headerVol = 0;
+
+        // NEW: Populate demandRows from BOTH Actuals and Targets
+        const allProds = new Set(Object.keys(demandMatrix));
+
+        // Add Products from Targets
+        if (window.dbState.dtTargets && window.dbState.dtTargets[dateFilter]) {
+            Object.keys(window.dbState.dtTargets[dateFilter]).forEach(p => allProds.add(p));
+        }
+
+        allProds.forEach(prod => {
+            if (selectedProd !== 'All Products' && prod !== selectedProd) return;
+
+            const markets = demandMatrix[prod] || {};
+            const allMkts = new Set(Object.keys(markets));
+
+            // Special handling for KP Trades - extract markets from all products with Type='Known Party'
+            if (prod === 'KP Trades' && window.dbState.dtTargets && window.dbState.dtTargets[dateFilter]) {
+                Object.keys(window.dbState.dtTargets[dateFilter]).forEach(product => {
+                    // Skip Pomegranate (goes to Pomo KP)
+                    if (product === 'Pomegranate') return;
+
+                    const marketsData = window.dbState.dtTargets[dateFilter][product];
+                    Object.keys(marketsData).forEach(key => {
+                        const target = marketsData[key];
+                        // Check if Type is "Known Party"
+                        if (target.type && target.type.toLowerCase().includes('known')) {
+                            // Extract market name
+                            const marketName = key.includes('::') ? key.split('::')[0] : key;
+                            allMkts.add(marketName);
+                        }
+                    });
+                });
+            } else {
+                // Normal product - extract from its own targets
+                const targetMarkets = (window.dbState.dtTargets && window.dbState.dtTargets[dateFilter] && window.dbState.dtTargets[dateFilter][prod]) ? window.dbState.dtTargets[dateFilter][prod] : {};
+
+                // Add Markets from Targets - include customer-level targets by extracting market name
+                Object.keys(targetMarkets).forEach(k => {
+                    if (!k.includes('::')) {
+                        // OLD format: Direct market target (shouldn't happen with new logic, but keep for compatibility)
+                        allMkts.add(k);
+                    } else {
+                        // Customer-level or row-indexed target: extract market name from "Market::Customer" or "Market::_rowN" format
+                        const marketName = k.split('::')[0];
+                        allMkts.add(marketName);
+                    }
+                });
+            }
+
+            allMkts.forEach(mkt => {
+                const data = markets[mkt] || { s: 0, m: 0, vol: 0 };
+
+                // OPTIMIZATION: Only show active markets (with actual data)
+                if (data.vol === 0 && data.s === 0) return; // Skip empty markets
+
+                demandRows.push({ prod, mkt, s: data.s, m: data.m, vol: data.vol });
+                headerSales += data.s;
+                headerMargin += data.m;
+                headerVol += data.vol;
+            });
+        });
+
+        // Update Header with Totals
+        const dmTitle = document.getElementById('demand-matrix-title');
+        if (dmTitle) {
+            // Keep title clean
+            dmTitle.innerText = `Demand Matrix (${selectedProd})`;
+        }
+
+        // Sort Rows: Sales Descending, but "Pomo KP" at bottom for Pomegranate
+        demandRows.sort((a, b) => {
+            if (a.mkt === "Pomo KP" && b.mkt !== "Pomo KP") return 1; // Pomo KP last
+            if (a.mkt !== "Pomo KP" && b.mkt === "Pomo KP") return -1;
+            return b.s - a.s;
+        });
+
+        if (demandRows.length === 0) {
+            dmBody.innerHTML = '<tr><td colspan="5" class="px-6 py-8 text-center text-slate-400 text-xs italic">No data available</td></tr>';
+        } else {
+            // Update Header Totals: Calculate target from ALL markets in targets CSV, not just displayed rows
+            let headerSalesTarget = 0, headerMarginTarget = 0, headerBoxesTarget = 0;
+
+            // Sum ALL market targets for this product from targets CSV
+            if (selectedProd === 'KP Trades' && window.dbState.dtTargets) {
+                // Special handling for KP Trades - aggregate across all products with Type='Known Party'
+                if (dateFilter !== 'All Months' && window.dbState.dtTargets[dateFilter]) {
                     Object.keys(window.dbState.dtTargets[dateFilter]).forEach(product => {
-                        // Skip Pomegranate (goes to Pomo KP)
-                        if (product === 'Pomegranate') return;
+                        if (product === 'Pomegranate') return; // Skip Pomegranate
 
                         const marketsData = window.dbState.dtTargets[dateFilter][product];
                         Object.keys(marketsData).forEach(key => {
                             const target = marketsData[key];
-                            // Check if Type is "Known Party"
                             if (target.type && target.type.toLowerCase().includes('known')) {
-                                // Extract market name
-                                const marketName = key.includes('::') ? key.split('::')[0] : key;
-                                allMkts.add(marketName);
+                                headerSalesTarget += (target.sales || 0);
+                                headerMarginTarget += (target.margin || 0);
+                                headerBoxesTarget += (target.boxes || 0);
                             }
                         });
                     });
-                } else {
-                    // Normal product - extract from its own targets
-                    const targetMarkets = (window.dbState.dtTargets && window.dbState.dtTargets[dateFilter] && window.dbState.dtTargets[dateFilter][prod]) ? window.dbState.dtTargets[dateFilter][prod] : {};
+                } else if (dateFilter === 'All Months') {
+                    Object.values(window.dbState.dtTargets).forEach(monthData => {
+                        Object.keys(monthData).forEach(product => {
+                            if (product === 'Pomegranate') return;
 
-                    // Add Markets from Targets - include customer-level targets by extracting market name
-                    Object.keys(targetMarkets).forEach(k => {
-                        if (!k.includes('::')) {
-                            // OLD format: Direct market target (shouldn't happen with new logic, but keep for compatibility)
-                            allMkts.add(k);
-                        } else {
-                            // Customer-level or row-indexed target: extract market name from "Market::Customer" or "Market::_rowN" format
-                            const marketName = k.split('::')[0];
-                            allMkts.add(marketName);
-                        }
-                    });
-                }
-
-                allMkts.forEach(mkt => {
-                    const data = markets[mkt] || { s: 0, m: 0, vol: 0 };
-
-                    // OPTIMIZATION: Only show active markets (with actual data)
-                    if (data.vol === 0 && data.s === 0) return; // Skip empty markets
-
-                    demandRows.push({ prod, mkt, s: data.s, m: data.m, vol: data.vol });
-                    headerSales += data.s;
-                    headerMargin += data.m;
-                    headerVol += data.vol;
-                });
-            });
-
-            // Update Header with Totals
-            const dmTitle = document.getElementById('demand-matrix-title');
-            if (dmTitle) {
-                // Keep title clean
-                dmTitle.innerText = `Demand Matrix (${selectedProd})`;
-            }
-
-            // Sort Rows: Sales Descending, but "Pomo KP" at bottom for Pomegranate
-            demandRows.sort((a, b) => {
-                if (a.mkt === "Pomo KP" && b.mkt !== "Pomo KP") return 1; // Pomo KP last
-                if (a.mkt !== "Pomo KP" && b.mkt === "Pomo KP") return -1;
-                return b.s - a.s;
-            });
-
-            if (demandRows.length === 0) {
-                dmBody.innerHTML = '<tr><td colspan="5" class="px-6 py-8 text-center text-slate-400 text-xs italic">No data available</td></tr>';
-            } else {
-                // Update Header Totals: Calculate target from ALL markets in targets CSV, not just displayed rows
-                let headerSalesTarget = 0, headerMarginTarget = 0, headerBoxesTarget = 0;
-
-                // Sum ALL market targets for this product from targets CSV
-                if (selectedProd === 'KP Trades' && window.dbState.dtTargets) {
-                    // Special handling for KP Trades - aggregate across all products with Type='Known Party'
-                    if (dateFilter !== 'All Months' && window.dbState.dtTargets[dateFilter]) {
-                        Object.keys(window.dbState.dtTargets[dateFilter]).forEach(product => {
-                            if (product === 'Pomegranate') return; // Skip Pomegranate
-
-                            const marketsData = window.dbState.dtTargets[dateFilter][product];
+                            const marketsData = monthData[product];
                             Object.keys(marketsData).forEach(key => {
                                 const target = marketsData[key];
                                 if (target.type && target.type.toLowerCase().includes('known')) {
@@ -2979,83 +3008,68 @@
                                 }
                             });
                         });
-                    } else if (dateFilter === 'All Months') {
-                        Object.values(window.dbState.dtTargets).forEach(monthData => {
-                            Object.keys(monthData).forEach(product => {
-                                if (product === 'Pomegranate') return;
-
-                                const marketsData = monthData[product];
-                                Object.keys(marketsData).forEach(key => {
-                                    const target = marketsData[key];
-                                    if (target.type && target.type.toLowerCase().includes('known')) {
-                                        headerSalesTarget += (target.sales || 0);
-                                        headerMarginTarget += (target.margin || 0);
-                                        headerBoxesTarget += (target.boxes || 0);
-                                    }
-                                });
-                            });
-                        });
-                    }
-                } else if (window.dbState.dtTargets) {
-                    // Regular product - sum all markets from targets
-                    if (dateFilter !== 'All Months' && window.dbState.dtTargets[dateFilter] && window.dbState.dtTargets[dateFilter][selectedProd]) {
-                        Object.keys(window.dbState.dtTargets[dateFilter][selectedProd]).forEach(key => {
-                            const target = window.dbState.dtTargets[dateFilter][selectedProd][key];
-                            // EXCLUDE Known Party targets for non-Pomegranate products only
-                            // Pomegranate header SHOULD include Pomo KP targets
-                            if (selectedProd !== 'Pomegranate' && target.type && target.type.toLowerCase().includes('known')) {
-                                return; // Skip KP targets for other products
-                            }
-                            headerSalesTarget += (target.sales || 0);
-                            headerMarginTarget += (target.margin || 0);
-                            headerBoxesTarget += (target.boxes || 0);
-                        });
-                    } else if (dateFilter === 'All Months') {
-                        Object.values(window.dbState.dtTargets).forEach(monthData => {
-                            if (monthData[selectedProd]) {
-                                Object.keys(monthData[selectedProd]).forEach(key => {
-                                    const target = monthData[selectedProd][key];
-                                    // EXCLUDE Known Party targets for non-Pomegranate products only
-                                    // Pomegranate header SHOULD include Pomo KP targets
-                                    if (selectedProd !== 'Pomegranate' && target.type && target.type.toLowerCase().includes('known')) {
-                                        return; // Skip KP targets for other products
-                                    }
-                                    headerSalesTarget += (target.sales || 0);
-                                    headerMarginTarget += (target.margin || 0);
-                                    headerBoxesTarget += (target.boxes || 0);
-                                });
-                            }
-                        });
-                    }
+                    });
                 }
+            } else if (window.dbState.dtTargets) {
+                // Regular product - sum all markets from targets
+                if (dateFilter !== 'All Months' && window.dbState.dtTargets[dateFilter] && window.dbState.dtTargets[dateFilter][selectedProd]) {
+                    Object.keys(window.dbState.dtTargets[dateFilter][selectedProd]).forEach(key => {
+                        const target = window.dbState.dtTargets[dateFilter][selectedProd][key];
+                        // EXCLUDE Known Party targets for non-Pomegranate products only
+                        // Pomegranate header SHOULD include Pomo KP targets
+                        if (selectedProd !== 'Pomegranate' && target.type && target.type.toLowerCase().includes('known')) {
+                            return; // Skip KP targets for other products
+                        }
+                        headerSalesTarget += (target.sales || 0);
+                        headerMarginTarget += (target.margin || 0);
+                        headerBoxesTarget += (target.boxes || 0);
+                    });
+                } else if (dateFilter === 'All Months') {
+                    Object.values(window.dbState.dtTargets).forEach(monthData => {
+                        if (monthData[selectedProd]) {
+                            Object.keys(monthData[selectedProd]).forEach(key => {
+                                const target = monthData[selectedProd][key];
+                                // EXCLUDE Known Party targets for non-Pomegranate products only
+                                // Pomegranate header SHOULD include Pomo KP targets
+                                if (selectedProd !== 'Pomegranate' && target.type && target.type.toLowerCase().includes('known')) {
+                                    return; // Skip KP targets for other products
+                                }
+                                headerSalesTarget += (target.sales || 0);
+                                headerMarginTarget += (target.margin || 0);
+                                headerBoxesTarget += (target.boxes || 0);
+                            });
+                        }
+                    });
+                }
+            }
 
-                const totalYield = headerSales ? (headerMargin / headerSales * 100) : 0;
+            const totalYield = headerSales ? (headerMargin / headerSales * 100) : 0;
 
-                // Update DOM elements in header
-                const hVol = document.getElementById('dm-header-vol');
-                const hSales = document.getElementById('dm-header-sales');
-                const hMargin = document.getElementById('dm-header-margin');
-                const hYield = document.getElementById('dm-header-yield');
+            // Update DOM elements in header
+            const hVol = document.getElementById('dm-header-vol');
+            const hSales = document.getElementById('dm-header-sales');
+            const hMargin = document.getElementById('dm-header-margin');
+            const hYield = document.getElementById('dm-header-yield');
 
-                if (hVol) hVol.innerHTML = `<span class="text-white">${headerVol.toLocaleString()}</span> <span class="text-slate-400">/</span> <span class="text-slate-400 font-normal">${headerBoxesTarget.toLocaleString()}</span>`;
-                if (hSales) hSales.innerHTML = `<span class="text-white">${compactRupee.format(headerSales)}</span> <span class="text-slate-400">/</span> <span class="text-slate-400 font-normal">${compactRupee.format(headerSalesTarget)}</span>`;
-                if (hMargin) hMargin.innerHTML = `<span class="text-emerald-300">${compactRupee.format(headerMargin)}</span>`;
-                if (hYield) hYield.innerText = totalYield.toFixed(2) + '%';
+            if (hVol) hVol.innerHTML = `<span class="text-white">${headerVol.toLocaleString()}</span> <span class="text-slate-400">/</span> <span class="text-slate-400 font-normal">${headerBoxesTarget.toLocaleString()}</span>`;
+            if (hSales) hSales.innerHTML = `<span class="text-white">${compactRupee.format(headerSales)}</span> <span class="text-slate-400">/</span> <span class="text-slate-400 font-normal">${compactRupee.format(headerSalesTarget)}</span>`;
+            if (hMargin) hMargin.innerHTML = `<span class="text-emerald-300">${compactRupee.format(headerMargin)}</span>`;
+            if (hYield) hYield.innerText = totalYield.toFixed(2) + '%';
 
-                demandRows.forEach(r => {
-                    const t = getDemandTarget(r.prod, r.mkt);
-                    const sGoal = t.sales; // CSV already contains actual rupee value, no multiplication needed
-                    const mGoal = t.margin;
-                    const boxGoal = t.boxes; // Boxes target from Column M
+            demandRows.forEach(r => {
+                const t = getDemandTarget(r.prod, r.mkt);
+                const sGoal = t.sales; // CSV already contains actual rupee value, no multiplication needed
+                const mGoal = t.margin;
+                const boxGoal = t.boxes; // Boxes target from Column M
 
-                    const eff = r.s ? (r.m / r.s * 100) : 0;
-                    const sPct = sGoal > 0 ? (r.s / sGoal) * 100 : 0;
-                    const mPct = mGoal > 0 ? (r.m / mGoal) * 100 : 0;
-                    const boxPct = boxGoal > 0 ? (r.vol / boxGoal) * 100 : 0;
+                const eff = r.s ? (r.m / r.s * 100) : 0;
+                const sPct = sGoal > 0 ? (r.s / sGoal) * 100 : 0;
+                const mPct = mGoal > 0 ? (r.m / mGoal) * 100 : 0;
+                const boxPct = boxGoal > 0 ? (r.vol / boxGoal) * 100 : 0;
 
-                    const rowClass = "hover:bg-slate-50 transition-colors border-b border-slate-100 last:border-0 cursor-pointer";
+                const rowClass = "hover:bg-slate-50 transition-colors border-b border-slate-100 last:border-0 cursor-pointer";
 
-                    dmBody.insertAdjacentHTML('beforeend', `
+                dmBody.insertAdjacentHTML('beforeend', `
                         <tr class="${rowClass}" onclick="showDemandDrillDown('${r.prod}', '${r.mkt}')">
                              <td class="px-6 py-5 align-top"><span class="text-sm font-extrabold text-slate-800">${r.mkt}</span></td>
                              <td class="px-6 py-5 align-top">
@@ -3086,62 +3100,62 @@
                              </td>
                         </tr >
                     `);
-                });
-            }
-
-
-            // Side panels - Top Customers
-            const topC = document.getElementById('top-customers-list'); topC.innerHTML = '';
-            Object.entries(custs).sort((a, b) => b[1].m - a[1].m).slice(0, 5).forEach(([n, d], i) => topC.insertAdjacentHTML('beforeend', `<div class="flex justify-between items-center p-2 border-b text-[10px]"><div class="font-bold w-4 text-slate-400">#${i + 1}</div><div class="flex-1 font-bold text-slate-700 truncate mr-2">${n}</div><div class="font-bold text-emerald-600">${compactRupee.format(d.m)}</div></div>`));
-
-            // Populate Product Dropdown & Render Top Markets
-            const productFilter = document.getElementById('dt-market-product-filter');
-            const uniqueProducts = Array.from(new Set(window.allDTTransactions.map(t => t.product))).sort();
-
-            // Save current selection if exists
-            const currentSelection = productFilter.value;
-
-            productFilter.innerHTML = '';
-            uniqueProducts.forEach(p => {
-                const opt = document.createElement('option');
-                opt.value = p;
-                opt.innerText = p;
-                productFilter.appendChild(opt);
             });
+        }
 
-            // Default to Pomegranate if available, else All/First
-            if (uniqueProducts.includes("Pomegranate") && !currentSelection) {
-                productFilter.value = "Pomegranate";
-            } else if (currentSelection && uniqueProducts.includes(currentSelection)) {
-                productFilter.value = currentSelection;
+
+        // Side panels - Top Customers
+        const topC = document.getElementById('top-customers-list'); topC.innerHTML = '';
+        Object.entries(custs).sort((a, b) => b[1].m - a[1].m).slice(0, 5).forEach(([n, d], i) => topC.insertAdjacentHTML('beforeend', `<div class="flex justify-between items-center p-2 border-b text-[10px]"><div class="font-bold w-4 text-slate-400">#${i + 1}</div><div class="flex-1 font-bold text-slate-700 truncate mr-2">${n}</div><div class="font-bold text-emerald-600">${compactRupee.format(d.m)}</div></div>`));
+
+        // Populate Product Dropdown & Render Top Markets
+        const productFilter = document.getElementById('dt-market-product-filter');
+        const uniqueProducts = Array.from(new Set(window.allDTTransactions.map(t => t.product))).sort();
+
+        // Save current selection if exists
+        const currentSelection = productFilter.value;
+
+        productFilter.innerHTML = '';
+        uniqueProducts.forEach(p => {
+            const opt = document.createElement('option');
+            opt.value = p;
+            opt.innerText = p;
+            productFilter.appendChild(opt);
+        });
+
+        // Default to Pomegranate if available, else All/First
+        if (uniqueProducts.includes("Pomegranate") && !currentSelection) {
+            productFilter.value = "Pomegranate";
+        } else if (currentSelection && uniqueProducts.includes(currentSelection)) {
+            productFilter.value = currentSelection;
+        }
+
+
+        // Add event listener to close sidebar when clicking outside
+        document.addEventListener('click', function (event) {
+            const sidebar = document.getElementById('config-sidebar');
+            const settingsBtn = document.getElementById('settings-btn');
+            // Check if sidebar is open (not translating out) and click is NOT inside sidebar AND NOT on the button
+            if (!sidebar.classList.contains('translate-x-full') &&
+                !sidebar.contains(event.target) &&
+                !settingsBtn.contains(event.target)) {
+                toggleConfig();
             }
+        });
+
+        renderTopMarkets();
 
 
-            // Add event listener to close sidebar when clicking outside
-            document.addEventListener('click', function (event) {
-                const sidebar = document.getElementById('config-sidebar');
-                const settingsBtn = document.getElementById('settings-btn');
-                // Check if sidebar is open (not translating out) and click is NOT inside sidebar AND NOT on the button
-                if (!sidebar.classList.contains('translate-x-full') &&
-                    !sidebar.contains(event.target) &&
-                    !settingsBtn.contains(event.target)) {
-                    toggleConfig();
-                }
-            });
+        // Side panels - Source Market Performance
+        const sourceMList = document.getElementById('source-market-list'); sourceMList.innerHTML = '';
+        const marketList = Object.entries(sourceMarkets).map(([n, d]) => ({
+            name: n,
+            rate: d.b ? (d.s / (d.b * 10)) : 0,
+            vol: d.b
+        })).sort((a, b) => b.rate - a.rate);
 
-            renderTopMarkets();
-
-
-            // Side panels - Source Market Performance
-            const sourceMList = document.getElementById('source-market-list'); sourceMList.innerHTML = '';
-            const marketList = Object.entries(sourceMarkets).map(([n, d]) => ({
-                name: n,
-                rate: d.b ? (d.s / (d.b * 10)) : 0,
-                vol: d.b
-            })).sort((a, b) => b.rate - a.rate);
-
-            marketList.forEach(m => {
-                sourceMList.insertAdjacentHTML('beforeend', `
+        marketList.forEach(m => {
+            sourceMList.insertAdjacentHTML('beforeend', `
                         <div class="p-2 border rounded mb-2 bg-slate-50">
                         <div class="flex justify-between items-center mb-1">
                             <span class="text-[10px] font-black text-slate-800">${m.name}</span>
@@ -3153,12 +3167,12 @@
                         </div>
                     </div>
                         `);
-            });
+        });
 
-            // Side panels - Trade Corridor (Restored)
-            const corrList = document.getElementById('corridor-list'); corrList.innerHTML = '';
-            Object.entries(corridors).sort((a, b) => b[1].m - a[1].m).slice(0, 5).forEach(([n, d]) => {
-                corrList.insertAdjacentHTML('beforeend', `
+        // Side panels - Trade Corridor (Restored)
+        const corrList = document.getElementById('corridor-list'); corrList.innerHTML = '';
+        Object.entries(corridors).sort((a, b) => b[1].m - a[1].m).slice(0, 5).forEach(([n, d]) => {
+            corrList.insertAdjacentHTML('beforeend', `
                         <div class="p-2 border rounded mb-2 hover:bg-slate-50 transition-colors">
                         <div class="flex justify-between text-[10px] font-bold"><span class="text-slate-700 truncate max-w-[150px]">${n}</span><span class="text-blue-600">${compactRupee.format(d.m)}</span></div>
                         <div class="text-[9px] text-slate-400 mt-1 flex justify-between">
@@ -3167,65 +3181,65 @@
                         </div>
                     </div>
                         `);
-            });
+        });
 
-            // CHART: Water Flow (Cumulative GMV Daily)
-            if (trendChart) trendChart.destroy();
+        // CHART: Water Flow (Cumulative GMV Daily)
+        if (trendChart) trendChart.destroy();
 
-            const dates = Object.keys(dailySales).sort();
-            const displayDates = dates.map(d => {
-                const date = new Date(d);
-                return date.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
-            });
+        const dates = Object.keys(dailySales).sort();
+        const displayDates = dates.map(d => {
+            const date = new Date(d);
+            return date.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
+        });
 
-            let runningTotal = 0;
-            const cumulativeData = dates.map(d => {
-                runningTotal += dailySales[d];
-                return runningTotal;
-            });
+        let runningTotal = 0;
+        const cumulativeData = dates.map(d => {
+            runningTotal += dailySales[d];
+            return runningTotal;
+        });
 
-            trendChart = new Chart(document.getElementById('trendChart'), {
-                type: 'line',
-                data: {
-                    labels: displayDates,
-                    datasets: [{
-                        label: 'Cumulative Closed GMV',
-                        data: cumulativeData,
-                        borderColor: '#2563eb',
-                        backgroundColor: 'rgba(37, 99, 235, 0.15)', // Water effect
-                        fill: 'origin',
-                        tension: 0.4,
-                        pointRadius: 2,
-                        pointHoverRadius: 4
-                    }]
-                },
-                options: {
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    plugins: {
-                        legend: { display: false },
-                        tooltip: {
-                            callbacks: {
-                                label: (ctx) => ` ₹${compactRupee.format(ctx.raw)} `
-                            }
+        trendChart = new Chart(document.getElementById('trendChart'), {
+            type: 'line',
+            data: {
+                labels: displayDates,
+                datasets: [{
+                    label: 'Cumulative Closed GMV',
+                    data: cumulativeData,
+                    borderColor: '#2563eb',
+                    backgroundColor: 'rgba(37, 99, 235, 0.15)', // Water effect
+                    fill: 'origin',
+                    tension: 0.4,
+                    pointRadius: 2,
+                    pointHoverRadius: 4
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: { display: false },
+                    tooltip: {
+                        callbacks: {
+                            label: (ctx) => ` ₹${compactRupee.format(ctx.raw)} `
                         }
+                    }
+                },
+                scales: {
+                    x: {
+                        grid: { display: false },
+                        ticks: { maxTicksLimit: 10, font: { size: 9 } }
                     },
-                    scales: {
-                        x: {
-                            grid: { display: false },
-                            ticks: { maxTicksLimit: 10, font: { size: 9 } }
-                        },
-                        y: {
-                            beginAtZero: true,
-                            grid: { display: false },
-                            ticks: {
-                                callback: (val) => compactRupee.format(val),
-                                font: { size: 9 }
-                            }
+                    y: {
+                        beginAtZero: true,
+                        grid: { display: false },
+                        ticks: {
+                            callback: (val) => compactRupee.format(val),
+                            font: { size: 9 }
                         }
                     }
                 }
-            });
+            }
+        });
         }
 
         function renderTopMarkets() {
