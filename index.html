@@ -1002,7 +1002,7 @@
             }
         };
 
-        const OWNER_ORDER = ["Karan", "Kishore", "Amith (Apple)", "Amith (Kinnow)", "Bharath", "Amit / Bharath", "Amit", "Kishore (Known Party)", "Central (Known Party)"];
+        const OWNER_ORDER = ["Karan", "Kishore", "Amit (Apple)", "Amit (Kinnow)", "Bharath", "Amit / Bharath", "Amit", "Kishore (Known Party)", "Central (Known Party)"];
         let trendChart = null;
         let sourceChart = null;
         let dispatchChart = null;
@@ -1708,15 +1708,15 @@
 
             if (isNewLogic) {
                 // =============== MARCH 2026 & ONWARD ===============
-                // 2. Strict Overrides (Amith Kinnow)
-                if (mark === "Kinnow") return "Amith (Kinnow)";
+                // 2. Strict Overrides (Amit Kinnow - all Kinnow goes to Amit)
+                if (mark === "Kinnow") return "Amit (Kinnow)";
 
                 // 3. Known Party Logic (Central / Kishore)
                 if (mark === "Mango" || (mark === "Apple" && isKnown)) return "Central (Known Party)";
                 if (mark.includes("POMO") && isKnown) return "Kishore (Known Party)";
 
-                // 4. Amith Logic (Apple without "known")
-                if (mark === "Apple") return "Amith (Apple)";
+                // 4. Amit Logic (Apple without "known")
+                if (mark === "Apple") return "Amit (Apple)";
 
                 // 5. Remaining POMO Logic (Karan / Kishore)
                 if (mark.includes("POMO")) {
@@ -2693,8 +2693,9 @@
             });
 
             let totalOwnerSalesTarget = 0, totalOwnerMarginTarget = 0;
-            // Gather the total goals from All active owners
-            sortedOwners.forEach(owner => {
+            // Sum targets from ALL known owners (not just ones with trades)
+            // so that owners with no trades yet still contribute to the total goal
+            OWNER_ORDER.forEach(owner => {
                 const t = getOwnerTarget(owner);
                 totalOwnerSalesTarget += (t.sales || 0) * 100000;
                 totalOwnerMarginTarget += (t.margin || 0) * 100000;
